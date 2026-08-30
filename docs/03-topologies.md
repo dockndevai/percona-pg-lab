@@ -9,6 +9,37 @@ laptop — see the resource notes at the bottom.
 | [`ha`](../clusters/ha) | 3, synchronous | 3 | PVC + repo host | node loss |
 | [`dr-standby`](../clusters/dr-standby) | 1, read-only | 1 | shared S3, read | loss of the whole source cluster |
 
+```mermaid
+flowchart LR
+    subgraph dev ["dev-standalone"]
+        direction TB
+        d1["PgBouncer"] --> d2["PostgreSQL"]
+        d2 --> d3[("repo1 PVC")]
+    end
+
+    subgraph ha ["ha"]
+        direction TB
+        h0["PgBouncer × 3"] --> h1["Leader"]
+        h1 ==>|sync| h2["Standby"]
+        h1 -->|async| h3["Standby"]
+        h1 --> h4[("repo1 + repo2")]
+    end
+
+    subgraph dr ["dr-standby"]
+        direction TB
+        r0[("repo2 · S3")] -.->|"WAL replay<br/>~68s RPO"| r1["Read-only<br/>PostgreSQL"]
+    end
+
+    dev ~~~ ha
+    ha -.->|"shares repo2"| dr
+
+    classDef acc fill:#0b6bcb,stroke:#0b6bcb,color:#fff
+    class h1,d2 acc
+```
+
+Each buys you protection against a strictly larger failure, at a strictly larger
+cost. Pick the smallest one that covers what you are actually worried about.
+
 ---
 
 ## dev-standalone

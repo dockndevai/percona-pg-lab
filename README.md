@@ -15,6 +15,70 @@ make ha-up             # 3x PostgreSQL + 3x PgBouncer, synchronous replication
 make test              # the bats suite
 ```
 
+## What you get
+
+```mermaid
+flowchart LR
+    app["<b>Your application</b><br/><small>one connection string,<br/>survives failover</small>"]
+    pb["<b>PgBouncer × 3</b><br/><small>transaction pooling<br/>3000 clients → ≤75 backends</small>"]
+    prim{{"<b>-primary</b><br/><small>follows the leader</small>"}}
+    repl{{"<b>-replicas</b><br/><small>standbys only</small>"}}
+
+    subgraph pg ["PostgreSQL · Patroni · one per node"]
+        direction TB
+        L["<b>Leader</b> · zone-a"]
+        S1["Sync standby · zone-b"]
+        S2["Async standby · zone-c"]
+        L ==>|"synchronous_commit=on"| S1
+        L -->|"async"| S2
+    end
+
+    repo["pgBackRest<br/>repo host"]
+    s3[("MinIO / S3<br/><small>repo2</small>")]
+    dr["<b>DR cluster</b><br/><small>separate namespace</small>"]
+
+    app -->|"pgbouncer-uri"| pb --> prim --> L
+    app -.->|"read-only"| repl
+    repl -.-> S1 & S2
+    L -->|"WAL"| repo --> s3
+    s3 -.->|"replay · ~68s RPO"| dr
+
+    classDef acc fill:#0b6bcb,stroke:#0b6bcb,color:#fff
+    classDef store fill:#eef3fa,stroke:#8aa4c8,color:#1a2b45
+    class L,pb acc
+    class s3,repo,dr store
+```
+
+Every arrow in that picture is exercised by a test in [`tests/`](tests/), and
+every failure mode along it is written up in
+[docs/11-troubleshooting.md](docs/11-troubleshooting.md).
+
+---
+
+## Who this is for
+
+**If you are evaluating Percona's operator** — this is a working cluster in
+three commands, plus an honest account of what did and did not work in v3.0.0.
+Six behaviours documented here are not in the upstream docs, and each one costs
+an afternoon to rediscover.
+
+**If you already run PostgreSQL on Kubernetes** — the value is in the parts that
+are easy to get subtly wrong: pooler sizing that survives contact with load, an
+anti-affinity rule that actually guarantees separation, a DR promotion that does
+not silently corrupt the repository you promoted from.
+
+**If you are learning** — every manifest is commented with *why* a value was
+chosen and what breaks with the obvious alternative, and every claim has a test
+you can run. `make failover` kills the primary and shows you the recovery.
+
+**If something is broken right now** — go straight to
+[docs/11-troubleshooting.md](docs/11-troubleshooting.md). It is organised by the
+symptom you would see first, because that is what you have when you are
+debugging. 27 entries, all of them things that actually happened here.
+
+**What this is not:** a Helm chart to deploy into production, or a replacement
+for Percona's documentation. It is a lab you read, run, and break.
+
 ---
 
 ## What this covers

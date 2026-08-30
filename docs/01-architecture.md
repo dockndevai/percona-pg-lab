@@ -76,25 +76,41 @@ without change, because the pooler's `[databases]` entry points at the
 
 ## Layers
 
-```
-      application
-           │  pgbouncer-uri
-           ▼
-   ha-cluster-pgbouncer  (3 replicas, transaction pooling)
-           │  [databases] * = host=ha-cluster-primary
-           ▼
-   ha-cluster-primary  (headless → current leader)
-           │
-   ┌───────┴────────┬─────────────────┐
-   │                │                 │
- instance1-a     instance1-b      instance1-c
- (primary)       (sync standby)   (async standby)
-   │                │                 │
-   └────────────────┴─────────────────┘
-           │  WAL archive
-           ▼
-   ha-cluster-repo-host  ──►  repo1 (PVC)
-                         └─►  repo2 (S3/MinIO) ──► dr-cluster in pg-dr
+```mermaid
+flowchart TB
+    app["Application"]
+    pb["ha-cluster-pgbouncer<br/><small>3 replicas · transaction pooling</small>"]
+    prim{{"ha-cluster-primary<br/><small>headless Service</small>"}}
+    repl{{"ha-cluster-replicas<br/><small>ClusterIP Service</small>"}}
+
+    subgraph patroni ["Patroni cluster &nbsp;·&nbsp; leader election in the DCS"]
+        direction LR
+        L["instance1-a<br/><b>Leader</b>"]
+        S1["instance1-b<br/>Sync standby"]
+        S2["instance1-c<br/>Async standby"]
+    end
+
+    rh["ha-cluster-repo-host<br/><small>pgBackRest</small>"]
+    r1[("repo1<br/>PVC")]
+    r2[("repo2<br/>S3 / MinIO")]
+    dr["dr-cluster<br/><small>namespace pg-dr</small>"]
+
+    app -->|"pgbouncer-uri"| pb
+    app -.->|"read-only"| repl
+    pb -->|"[databases] * = host=…-primary"| prim
+    prim --> L
+    repl --> S1 & S2
+    L ==>|"synchronous_commit=on"| S1
+    L -->|"async"| S2
+    L -->|"archive_command"| rh
+    rh --> r1
+    rh --> r2
+    r2 -.->|"restore + WAL replay"| dr
+
+    classDef acc fill:#0b6bcb,stroke:#0b6bcb,color:#fff
+    classDef store fill:#eef3fa,stroke:#8aa4c8,color:#1a2b45
+    class L,pb acc
+    class r1,r2,rh,dr store
 ```
 
 Each hop is a decision:

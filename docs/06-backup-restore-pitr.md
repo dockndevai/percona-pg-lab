@@ -133,6 +133,33 @@ meant.
 The standby cluster in [`clusters/dr-standby`](../clusters/dr-standby) replays
 WAL from `repo2`. It never contacts the primary.
 
+```mermaid
+flowchart LR
+    subgraph src ["namespace pg-ha &nbsp;·&nbsp; source"]
+        P["Primary"]
+        RH["repo host"]
+        P -->|"archive_command"| RH
+    end
+
+    S3[("MinIO / S3<br/><b>repo2-path</b><br/><small>the only coupling</small>")]
+
+    subgraph dst ["namespace pg-dr &nbsp;·&nbsp; standby"]
+        D["PostgreSQL<br/><small>standby.enabled: true</small>"]
+    end
+
+    RH -->|"WAL segments<br/>+ full backups"| S3
+    S3 -->|"restore_command<br/><small>completed segments only</small>"| D
+
+    classDef store fill:#eef3fa,stroke:#8aa4c8,color:#1a2b45
+    classDef acc fill:#0b6bcb,stroke:#0b6bcb,color:#fff
+    class S3,RH store
+    class P acc
+```
+
+Note what is *absent* from that diagram: any network path from `pg-dr` to
+`pg-ha`. That is the property being bought — and the reason the RPO is what it
+is.
+
 ```bash
 make minio-up
 scripts/s3-repo-up.sh
@@ -199,6 +226,28 @@ make dr-promote
 
 `scripts/dr-promote.sh` sets `standby.enabled: false` **and** repoints
 `repo2-path` to the DR cluster's own path, in a single patch.
+
+```mermaid
+flowchart TB
+    A["standby.enabled: false<br/>+ repo2-path → own path<br/><small>ONE patch</small>"]
+    B["pg_is_in_recovery() → f<br/><small>~6s</small>"]
+    C["timeline advances<br/><small>forks from the source</small>"]
+    D["writes accepted"]
+    E["archive_mode=on now writes<br/>to its OWN repo"]
+
+    X["If repo2-path were left pointing<br/>at the source stanza…"]
+    Y["…the promoted cluster archives its<br/>divergent timeline INTO it"]
+    Z["…and every future standby built from<br/>that repo restores the wrong lineage,<br/>reports <b>ready</b>, and never replicates"]
+
+    A --> B --> C --> D
+    C --> E
+    C -.-> X -.-> Y -.-> Z
+
+    classDef good fill:#e9f7ef,stroke:#1e8449,color:#145a32
+    classDef bad fill:#fdeaea,stroke:#c0392b,color:#7b241c
+    class B,D,E good
+    class X,Y,Z bad
+```
 
 That second half is the important part, and it is not obvious.
 
