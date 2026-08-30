@@ -18,6 +18,7 @@ Read in order for a walkthrough, or jump to what you need.
 | 12 | [MCP server](12-mcp-server.md) | How do I let an AI agent operate this — safely? |
 | 13 | [Cloud Kubernetes](13-cloud-kubernetes.md) | What changes on EKS, GKE or AKS? |
 | 14 | [CI/CD promotion](14-cicd-promotion.md) | How do I get a change from dev to prod without breaking prod? |
+| 15 | [Admission policies](15-admission-policies.md) | How do I make the rules impossible to bypass? |
 
 > **One page is not verified the way the rest are.**
 > [13-cloud-kubernetes](13-cloud-kubernetes.md) is reasoned from the operator's

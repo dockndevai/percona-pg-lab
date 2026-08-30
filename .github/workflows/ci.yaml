@@ -69,11 +69,17 @@ jobs:
       - name: Install the operator
         run: SKIP_PRELOAD=1 make operator-install
 
+      # Before the deploy, deliberately. This way the smoke test proves the
+      # shipped profile is actually ADMITTED under the policies, not merely
+      # that the policies compile.
+      - name: Install admission policies
+        run: make policy-install
+
       - name: Deploy the dev profile
         run: READY_TIMEOUT=1500 make dev-up
 
       - name: Run the test suite
-        run: scripts/run-tests.sh 00_operator.bats 10_dev_standalone.bats
+        run: scripts/run-tests.sh 00_operator.bats 10_dev_standalone.bats 95_admission_policy.bats
 
       - name: Diagnostics on failure
         if: failure()

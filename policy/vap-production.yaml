@@ -1,0 +1,135 @@
+# ---------------------------------------------------------------------------
+# Production admission policy for PerconaPGCluster.
+#
+# Bound by NAMESPACE LABEL, not by name — label a namespace
+#     percona-pg-lab.io/environment: prod
+# and it inherits these rules. That is what makes the policy a property of the
+# environment rather than a list someone has to remember to update.
+#
+# These are the same rules scripts/env-render.sh checks in CI. Both layers are
+# worth having: CI gives a fast, reviewable failure on a pull request; admission
+# control catches the manifest that reaches the API server some other way — a
+# kubectl edit, a Helm chart, a GitOps controller syncing a branch nobody
+# reviewed. CI is advice. Admission is enforcement.
+# ---------------------------------------------------------------------------
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: percona-pg-production
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["pgv2.percona.com"]
+        apiVersions: ["v2"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:   ["perconapgclusters"]
+
+  variables:
+    - name: dynconf
+      expression: >-
+        has(object.spec.patroni) && has(object.spec.patroni.dynamicConfiguration)
+          ? object.spec.patroni.dynamicConfiguration : {}
+    - name: pgParams
+      expression: >-
+        has(variables.dynconf.postgresql) && has(variables.dynconf.postgresql.parameters)
+          ? variables.dynconf.postgresql.parameters : {}
+    - name: repos
+      expression: >-
+        has(object.spec.backups) && has(object.spec.backups.pgbackrest)
+          && has(object.spec.backups.pgbackrest.repos)
+          ? object.spec.backups.pgbackrest.repos : []
+    - name: isStandby
+      expression: >-
+        has(object.spec.standby) && has(object.spec.standby.enabled)
+          && object.spec.standby.enabled
+
+  validations:
+    # A single instance has nobody to fail over to. Exempt standby clusters:
+    # a DR site is about having the data elsewhere, not about being HA itself.
+    - expression: >-
+        variables.isStandby || object.spec.instances.all(i, i.replicas >= 3)
+      reason: Invalid
+      messageExpression: >-
+        "production clusters need at least 3 PostgreSQL instances (found " +
+        object.spec.instances.map(i, string(i.replicas)).join(", ") +
+        "). Two is not enough either: losing one leaves no quorum for the next failure."
+
+    # Without synchronous_mode, Patroni may promote a standby that had not
+    # received the last commits — "probably no data loss" rather than none.
+    - expression: >-
+        variables.isStandby ||
+        (has(variables.dynconf.synchronous_mode) && variables.dynconf.synchronous_mode == true)
+      reason: Invalid
+      message: >-
+        production clusters need patroni.dynamicConfiguration.synchronous_mode: true.
+        Without it Patroni can promote a standby that has not received the most recent
+        commits, so a failover becomes a data-loss event. Note this belongs at the
+        dynamicConfiguration level, NOT under postgresql.parameters, where it is silently
+        ignored.
+
+    - expression: >-
+        !('synchronous_commit' in variables.pgParams)
+        || variables.pgParams.synchronous_commit != 'off'
+      reason: Invalid
+      message: >-
+        synchronous_commit=off in production. This is the largest single write-throughput
+        win available and it loses recent commits on an OS crash. It is appropriate in a
+        dev profile and nowhere else.
+
+    # A PVC-only production cluster has backups that die with the namespace.
+    - expression: >-
+        variables.isStandby ||
+        variables.repos.exists(r, has(r.s3) || has(r.gcs) || has(r.azure))
+      reason: Invalid
+      messageExpression: >-
+        "production needs at least one off-cluster backup repository (s3, gcs or azure); " +
+        "found only [" + variables.repos.map(r, r.name).join(", ") + "]. " +
+        "A PVC repo dies with the namespace, cannot be read by another cluster, and " +
+        "therefore provides no disaster recovery."
+
+    # An unbounded database will be OOMKilled, and requests==limits is what
+    # buys Guaranteed QoS so it is evicted last rather than first.
+    - expression: >-
+        object.spec.instances.all(i,
+          has(i.resources) && has(i.resources.limits)
+          && 'memory' in i.resources.limits && 'cpu' in i.resources.limits)
+      reason: Invalid
+      message: >-
+        production instances need explicit resources.limits for cpu and memory. An
+        unbounded PostgreSQL pod is an OOMKill waiting for a bad query; and without
+        requests matching limits the pod is Burstable, so the kubelet evicts your database
+        to protect stateless workloads.
+
+    # `preferred` anti-affinity lets Kubernetes colocate two instances under
+    # pressure, quietly removing the availability the replica count implies.
+    - expression: >-
+        variables.isStandby || object.spec.instances.all(i,
+          has(i.affinity) && has(i.affinity.podAntiAffinity)
+          && has(i.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution))
+      reason: Invalid
+      message: >-
+        production instances need podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution.
+        With `preferred`, Kubernetes will colocate two PostgreSQL pods on one node under
+        pressure and you lose the availability the replica count implies. A pod that cannot
+        be placed should stay Pending and visible.
+
+    # pause is a legitimate operation; doing it by accident in prod is not.
+    - expression: "!has(object.spec.pause) || object.spec.pause == false"
+      reason: Invalid
+      message: >-
+        spec.pause scales every workload in this cluster to zero. If that is genuinely
+        intended in production, remove the namespace's prod label for the duration or
+        delete this policy binding deliberately.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: percona-pg-production
+spec:
+  policyName: percona-pg-production
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        percona-pg-lab.io/environment: prod

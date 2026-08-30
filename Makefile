@@ -113,6 +113,24 @@ pmm-down: ## Remove PMM
 	helm --kube-context $(KUBE_CONTEXT) uninstall pmm -n pmm || true
 	$(K) delete ns pmm --ignore-not-found
 
+##@ Admission policies (see docs/15-admission-policies.md)
+
+.PHONY: policy-install
+policy-install: ## Install the ValidatingAdmissionPolicies and label env namespaces
+	@scripts/policy-install.sh
+
+.PHONY: policy-check
+policy-check: ## Report which existing clusters would be rejected — changes nothing
+	@scripts/policy-install.sh --check
+
+.PHONY: policy-test
+policy-test: ## Run the admission policy suite (17 assertions)
+	@scripts/run-tests.sh 95_admission_policy.bats
+
+.PHONY: policy-uninstall
+policy-uninstall: ## Remove the admission policies
+	@scripts/policy-uninstall.sh
+
 ##@ Environment promotion pipeline (see docs/14-cicd-promotion.md)
 
 .PHONY: env-render

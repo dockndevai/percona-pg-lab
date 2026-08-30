@@ -101,6 +101,7 @@ Start at [docs/00-index.md](docs/00-index.md), or jump straight in:
 | Driving the lab from an AI agent (MCP) | [docs/12-mcp-server.md](docs/12-mcp-server.md) |
 | Running on EKS / GKE / AKS — what changes from kind | [docs/13-cloud-kubernetes.md](docs/13-cloud-kubernetes.md) |
 | CI/CD: promoting a database change dev → staging → prod | [docs/14-cicd-promotion.md](docs/14-cicd-promotion.md) |
+| **Admission policies: enforcing the rules at the API server** | [docs/15-admission-policies.md](docs/15-admission-policies.md) |
 
 ## Topologies
 
@@ -186,6 +187,7 @@ competing for the same Docker VM.
 ```
 clusters/      PerconaPGCluster manifests, one directory per topology
 environments/  base + dev/staging/prod overlays for the promotion pipeline
+policy/        ValidatingAdmissionPolicies + their test fixtures
 operator/      operator Helm values
 observability/ kube-prometheus-stack values, exporter sidecars, alerts, dashboards
 backup/        MinIO (S3 target), pgBackRest repo config, backup/restore samples

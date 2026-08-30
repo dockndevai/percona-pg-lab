@@ -1,0 +1,160 @@
+# ---------------------------------------------------------------------------
+# Baseline admission policy for PerconaPGCluster — every environment.
+#
+# These are not style rules. Every one of them encodes a failure this lab
+# actually hit, chosen specifically because the operator does NOT tell you when
+# you get them wrong: it accepts the resource and then misbehaves quietly.
+# Admission control is the right layer precisely because the feedback loop
+# without it is "the cluster is broken and nothing says why".
+#
+# See docs/15-admission-policies.md for the failure behind each rule.
+# ---------------------------------------------------------------------------
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: percona-pg-baseline
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["pgv2.percona.com"]
+        apiVersions: ["v2"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:   ["perconapgclusters"]
+
+  variables:
+    - name: pgbackrest
+      expression: >-
+        has(object.spec.backups) && has(object.spec.backups.pgbackrest)
+          ? object.spec.backups.pgbackrest : null
+    - name: repos
+      expression: >-
+        variables.pgbackrest != null && has(variables.pgbackrest.repos)
+          ? variables.pgbackrest.repos : []
+    - name: globals
+      expression: >-
+        variables.pgbackrest != null && has(variables.pgbackrest.global)
+          ? variables.pgbackrest.global : {}
+    - name: bouncerGlobal
+      expression: >-
+        has(object.spec.proxy) && has(object.spec.proxy.pgBouncer)
+          && has(object.spec.proxy.pgBouncer.config)
+          && has(object.spec.proxy.pgBouncer.config.global)
+          ? object.spec.proxy.pgBouncer.config.global : {}
+    - name: builtin
+      expression: >-
+        has(object.spec.extensions) && has(object.spec.extensions.builtin)
+          ? object.spec.extensions.builtin : {}
+    # Extensions that require shared_preload_libraries. The operator sets that
+    # parameter to exactly ONE library, so enabling two means one is silently
+    # not installed.
+    # Routed through a variable rather than accessed inline. dynamicConfiguration
+    # is x-kubernetes-preserve-unknown-fields, so CEL's type-checker cannot see
+    # into it — an inline object.spec.patroni.dynamicConfiguration.postgresql
+    # works at runtime but emits a type-check warning, and a warning is exactly
+    # the kind of thing that later gets ignored.
+    - name: pgParams
+      expression: >-
+        has(object.spec.patroni) && has(object.spec.patroni.dynamicConfiguration)
+          && has(object.spec.patroni.dynamicConfiguration.postgresql)
+          && has(object.spec.patroni.dynamicConfiguration.postgresql.parameters)
+          ? object.spec.patroni.dynamicConfiguration.postgresql.parameters : {}
+    - name: preloadCount
+      expression: >-
+        (has(variables.builtin.pg_stat_statements) && variables.builtin.pg_stat_statements ? 1 : 0) +
+        (has(variables.builtin.pg_stat_monitor)    && variables.builtin.pg_stat_monitor    ? 1 : 0) +
+        (has(variables.builtin.pg_audit)           && variables.builtin.pg_audit           ? 1 : 0)
+
+  validations:
+    # ---------------------------------------------------------------------
+    # Reconciliation stops dead, with ZERO pods and ZERO events on the CR.
+    # The only trace is a line in the operator log. This is the single best
+    # candidate for admission control in the whole operator.
+    - expression: >-
+        !object.spec.instances.exists(i,
+          has(i.topologySpreadConstraints) &&
+          i.topologySpreadConstraints.exists(c,
+            c.whenUnsatisfiable == 'ScheduleAnyway' &&
+            (c.topologyKey == 'kubernetes.io/hostname' ||
+             c.topologyKey == 'topology.kubernetes.io/zone')))
+      reason: Invalid
+      messageExpression: >-
+        "instances[].topologySpreadConstraints duplicates one the operator injects " +
+        "(kubernetes.io/hostname and topology.kubernetes.io/zone, both ScheduleAnyway). " +
+        "Server-side apply keys these by (topologyKey, whenUnsatisfiable), so reconciliation " +
+        "fails with no pods and no events. Remove it and rely on the injected defaults, or " +
+        "use podAntiAffinity requiredDuringScheduling for a hard guarantee."
+
+    # ---------------------------------------------------------------------
+    # Without retention pgBackRest never expires anything. The volume fills
+    # weeks later, and by then nobody connects it to this manifest.
+    - expression: >-
+        variables.repos.all(r, (r.name + '-retention-full') in variables.globals)
+      reason: Invalid
+      messageExpression: >-
+        "every pgBackRest repo needs a retention policy: set " +
+        "spec.backups.pgbackrest.global['<repo>-retention-full'] for each of " +
+        variables.repos.map(r, r.name).join(", ") +
+        ". Without it pgBackRest never expires backups and the repository fills silently."
+
+    # ---------------------------------------------------------------------
+    # Setting admin_users without auth_dbname makes the admin console
+    # unreachable: PgBouncer resolves auth_dbname to the reserved `pgbouncer`
+    # database and refuses every connection with "bouncer config error".
+    - expression: >-
+        !('admin_users' in variables.bouncerGlobal || 'stats_users' in variables.bouncerGlobal)
+        || 'auth_dbname' in variables.bouncerGlobal
+      reason: Invalid
+      message: >-
+        proxy.pgBouncer.config.global sets admin_users/stats_users without auth_dbname.
+        PgBouncer will then try to resolve auth_dbname to the reserved "pgbouncer" database
+        and reject every admin connection with "cannot use the reserved pgbouncer database
+        as an auth_dbname". Set auth_dbname to a real database name.
+
+    # ---------------------------------------------------------------------
+    # `monitor` is reserved. The operator logs one INFO line, never creates the
+    # Secret, and any sidecar referencing it wedges in CreateContainerConfigError.
+    - expression: >-
+        !has(object.spec.users) || !object.spec.users.exists(u, u.name == 'monitor')
+      reason: Invalid
+      message: >-
+        "monitor" is a reserved username. The operator ignores it with only an INFO log,
+        never creates the <cluster>-pguser-monitor Secret, and anything referencing that
+        Secret will sit in CreateContainerConfigError. Use a different name (this lab uses
+        "pgexporter") and GRANT pg_monitor to it explicitly.
+
+    # ---------------------------------------------------------------------
+    # The operator preloads exactly one library. Enabling two means one is
+    # created but non-functional: it appears in pg_extension and errors on every
+    # query with "must be loaded via shared_preload_libraries".
+    - expression: "variables.preloadCount <= 1"
+      reason: Invalid
+      messageExpression: >-
+        "extensions.builtin enables " + string(variables.preloadCount) +
+        " extensions that require shared_preload_libraries, but the operator preloads " +
+        "exactly ONE. The others are created and then fail every query with " +
+        "'must be loaded via shared_preload_libraries'. Enable one of " +
+        "pg_stat_statements / pg_stat_monitor / pg_audit. pgvector needs no preloading " +
+        "and can be enabled alongside."
+
+    # ---------------------------------------------------------------------
+    # Not a silent failure, but a costly one: shared_preload_libraries is
+    # operator-managed and your value is overwritten on the next reconcile.
+    - expression: "!('shared_preload_libraries' in variables.pgParams)"
+      reason: Invalid
+      message: >-
+        Do not set shared_preload_libraries under patroni.dynamicConfiguration — the
+        operator derives it from spec.extensions.builtin, appends to your value, and then
+        overwrites it on the next reconcile. Use spec.extensions.builtin instead.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: percona-pg-baseline
+spec:
+  policyName: percona-pg-baseline
+  # Deny, not Warn. Every rule here is a silent failure — a warning on stderr
+  # during `kubectl apply` is exactly the signal people miss.
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector: {}      # all namespaces

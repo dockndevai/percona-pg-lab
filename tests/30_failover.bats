@@ -105,7 +105,17 @@ timeline_of_leader() {
     patronictl -c /etc/patroni/~postgres-operator_cluster.yaml list
   [ "$status" -eq 0 ]
   assert_contains "$output" "Leader"
-  assert_contains "$output" "Sync Standby"
+
+  # Sync Standby is asserted with a retry, not inline. Immediately after a
+  # promotion the new leader exists but Patroni has not yet designated a
+  # replacement synchronous standby, so a single sample sees Leader + Replica
+  # and nothing else. That is a healthy cluster mid-convergence, not a broken
+  # one — the dedicated test below measures the same thing and is the real
+  # assertion; this one just should not fail while waiting for it.
+  run retry_until 180 bash -c \
+    "kubectl --context '$KUBE_CONTEXT' -n '$HA_NS' exec '${leader}' -c database -- \
+       patronictl -c /etc/patroni/~postgres-operator_cluster.yaml list | grep -q 'Sync Standby'"
+  [ "$status" -eq 0 ]
 }
 
 @test "patroni's history records the promotion" {
