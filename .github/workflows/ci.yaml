@@ -23,7 +23,10 @@ jobs:
           curl -sSL -o /tmp/kubeconform.tar.gz \
             https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
           sudo tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
-          npm install -g bats@1.11.0
+          # From source, not `npm install -g`: the runner's global npm prefix is
+          # root-owned, so npm fails with EACCES on /usr/local/share/man.
+          git clone --depth 1 --branch v1.11.0 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          sudo /tmp/bats-core/install.sh /usr/local
 
       - run: make lint
 
@@ -45,7 +48,9 @@ jobs:
           wait: 180s
 
       - name: Install bats
-        run: npm install -g bats@1.11.0
+        run: |
+          git clone --depth 1 --branch v1.11.0 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          sudo /tmp/bats-core/install.sh /usr/local
 
       - name: Install the operator
         run: SKIP_PRELOAD=1 make operator-install
