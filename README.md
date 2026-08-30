@@ -98,6 +98,7 @@ Start at [docs/00-index.md](docs/00-index.md), or jump straight in:
 | Day-2 operations: scale, upgrade, switchover, pause | [docs/09-lifecycle-operations.md](docs/09-lifecycle-operations.md) |
 | Measured performance results | [docs/10-performance-results.md](docs/10-performance-results.md) |
 | **Troubleshooting: the failures we actually hit** | [docs/11-troubleshooting.md](docs/11-troubleshooting.md) |
+| Driving the lab from an AI agent (MCP) | [docs/12-mcp-server.md](docs/12-mcp-server.md) |
 
 ## Topologies
 
@@ -141,6 +142,36 @@ storage, so it is always at least one WAL segment behind — measured at ~70s
 steady-state here. That is the correct trade for surviving the loss of an entire
 region, but it is not streaming replication and should not be documented as
 such. See [docs/06-backup-restore-pitr.md](docs/06-backup-restore-pitr.md#rpo).
+
+## Drive it from an AI agent
+
+[`mcp-percona-pg`](https://github.com/dockndevai/mcp-percona-pg) is a companion
+MCP server for the same operator. Point it at this lab and an MCP client
+(Claude Code, Claude Desktop, Cursor, Codex) can inspect and operate the
+clusters here:
+
+```bash
+make mcp-config    # ready-to-paste config for every client, read-only, scoped to the lab
+```
+
+```
+> list the postgres clusters
+
+  ha-cluster (pg-ha) — ready
+  postgres  3/3 ready, version 18
+  pgbouncer 3/3 ready, pool_mode transaction
+```
+
+It drives the operator's custom resources through your kube-config and **never
+reads database credentials** — an agent can tell you a cluster is unhealthy
+without being able to read a row of your data. It starts read-only, and its
+guards are verified against this lab in
+[docs/12-mcp-server.md](docs/12-mcp-server.md): tools above your mode are never
+registered, destructive operations need separate opt-ins, and `PERCONA_DRY_RUN`
+shows you the exact patch it *would* apply.
+
+This lab is the right place to find out what an agent with database access
+actually does, because `make down` costs you nothing.
 
 ## Requirements
 

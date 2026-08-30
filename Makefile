@@ -113,6 +113,12 @@ pmm-down: ## Remove PMM
 	helm --kube-context $(KUBE_CONTEXT) uninstall pmm -n pmm || true
 	$(K) delete ns pmm --ignore-not-found
 
+##@ AI agent access (MCP)
+
+.PHONY: mcp-config
+mcp-config: ## Print MCP client config pointed at this lab (read-only)
+	@scripts/mcp-config.sh
+
 ##@ Extensions
 
 .PHONY: extensions-up

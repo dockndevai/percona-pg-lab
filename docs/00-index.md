@@ -15,6 +15,7 @@ Read in order for a walkthrough, or jump to what you need.
 | 09 | [Day-2 operations](09-lifecycle-operations.md) | Scaling, config changes, switchover, major upgrades, pause. |
 | 10 | [Performance results](10-performance-results.md) | Measured numbers, and how to reproduce them. |
 | 11 | [Troubleshooting](11-troubleshooting.md) | It broke. What now? |
+| 12 | [MCP server](12-mcp-server.md) | How do I let an AI agent operate this — safely? |
 
 ## If you are in a hurry
 
