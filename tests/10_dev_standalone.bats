@@ -50,11 +50,24 @@ teardown_file() { cleanup_client_pod "$DEV_NS"; }
 }
 
 @test "an initial backup was taken automatically" {
-  # The operator takes a replica-create backup on cluster creation. If this is
-  # empty, the backup path is broken and you would only find out when you
-  # needed it.
+  # The operator takes a replica-create backup on cluster creation. If this
+  # never produces a valid backup, the backup path is broken and you would only
+  # find out when you needed it.
+  #
+  # Wait rather than sampling once: "cluster ready" and "first backup finished"
+  # are different moments, and mid-flight pgBackRest reports
+  #   status: error (no valid backups, backup/expire running)
+  # which is a healthy repository being caught in the act. This raced in CI on a
+  # cold runner where the backup takes longer than the cluster does.
+  run retry_until 600 bash -c \
+    "kubectl --context '$KUBE_CONTEXT' -n '$DEV_NS' exec \
+       'statefulset/${DEV_CLUSTER}-repo-host' -c pgbackrest -- \
+       pgbackrest --stanza=db --repo=1 info | grep -q 'status: ok'"
+  [ "$status" -eq 0 ]
+
   run k -n "$DEV_NS" exec "statefulset/${DEV_CLUSTER}-repo-host" -c pgbackrest -- \
     pgbackrest --stanza=db --repo=1 info
   [ "$status" -eq 0 ]
   assert_contains "$output" "status: ok"
+  assert_contains "$output" "full backup:"
 }
