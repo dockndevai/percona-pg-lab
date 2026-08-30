@@ -30,6 +30,20 @@ jobs:
 
       - run: make lint
 
+      # Rendered manifests for every environment, as a reviewable artifact.
+      # A diff between two runs is the clearest description of what a pull
+      # request actually changes about a cluster.
+      - name: Render environment manifests
+        run: |
+          mkdir -p rendered
+          for env in dev staging prod; do
+            kubectl kustomize environments/$env > "rendered/$env.yaml"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: rendered/
+
   smoke:
     name: smoke (dev-standalone on kind)
     runs-on: ubuntu-latest

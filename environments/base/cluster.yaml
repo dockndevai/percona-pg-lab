@@ -1,0 +1,98 @@
+# ---------------------------------------------------------------------------
+# Shared base for the promotion pipeline: dev → staging → prod.
+#
+# This is the ONE definition of cluster shape. Environments differ from it only
+# through the JSON6902 patches in environments/<env>/, so a change to topology,
+# tuning or backup policy lands in every environment or in none.
+#
+# Note this is a *different* structuring choice from clusters/, which holds
+# standalone, fully-readable CRs for teaching. Here the priority is the
+# opposite: one source of truth, with the per-environment delta small enough to
+# review in a pull request. See docs/14-cicd-promotion.md#why-json6902
+# ---------------------------------------------------------------------------
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGCluster
+metadata:
+  name: app-pg
+spec:
+  crVersion: 3.0.0
+  postgresVersion: 18
+  image: docker.io/percona/percona-distribution-postgresql:18.3-2
+  imagePullPolicy: IfNotPresent
+
+  instances:
+    - name: instance1
+      replicas: 1
+      dataVolumeClaimSpec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi
+      resources:
+        requests: {cpu: 250m, memory: 512Mi}
+        limits:   {cpu: "1",  memory: 1Gi}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  postgres-operator.crunchydata.com/cluster: app-pg
+                  postgres-operator.crunchydata.com/data: postgres
+              topologyKey: kubernetes.io/hostname
+
+  proxy:
+    pgBouncer:
+      replicas: 1
+      image: docker.io/percona/percona-pgbouncer:1.25.1-1
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits:   {cpu: 200m, memory: 128Mi}
+      config:
+        global:
+          pool_mode: transaction
+          default_pool_size: "10"
+          max_client_conn: "200"
+          query_wait_timeout: "60"
+          server_login_retry: "2"
+          admin_users: app-pg
+          stats_users: app-pg
+          auth_dbname: app-pg
+
+  backups:
+    pgbackrest:
+      image: docker.io/percona/percona-pgbackrest:2.58.0-1
+      global:
+        repo1-retention-full: "2"
+        repo1-retention-full-type: count
+      repos:
+        - name: repo1
+          schedules:
+            full: "0 2 * * 0"
+          volume:
+            volumeClaimSpec:
+              accessModes: [ReadWriteOnce]
+              resources:
+                requests:
+                  storage: 2Gi
+
+  patroni:
+    removeDataDirectoryOnDivergedTimelines: true
+    dynamicConfiguration:
+      postgresql:
+        parameters:
+          shared_buffers: 256MB
+          effective_cache_size: 768MB
+          max_connections: "100"
+          # Overridden per environment. Present in the base so that JSON6902
+          # `replace` has a target — `replace` on a missing path is an error,
+          # which is the behaviour you want: a typo fails the build instead of
+          # silently adding a key nobody reviewed.
+          synchronous_commit: "on"
+          track_io_timing: "on"
+          log_min_duration_statement: "1000"
+
+  users:
+    - name: app-pg
+      databases: [app-pg]
+      password:
+        type: AlphaNumeric

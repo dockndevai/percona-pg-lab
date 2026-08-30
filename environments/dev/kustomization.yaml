@@ -1,0 +1,32 @@
+# dev — smallest thing that is still the same shape as prod.
+#
+# Single instance, no HA. The point of dev is that a developer can break it and
+# nobody notices, so it deliberately does NOT get a synchronous standby: that
+# would make dev slower than prod for no benefit, and people work around slow
+# environments in ways that hide problems until staging.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: app-dev
+resources:
+  - ../base
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: app-pg
+      percona-pg-lab.io/environment: dev
+
+patches:
+  - target:
+      kind: PerconaPGCluster
+      name: app-pg
+    # JSON6902, not a strategic merge: `instances`, `repos` and `users` are
+    # lists, and a merge patch replaces a list wholesale rather than merging
+    # into it. A one-line change to replicas would silently drop the affinity
+    # rules and resource limits defined in the base.
+    patch: |-
+      - op: replace
+        path: /spec/patroni/dynamicConfiguration/postgresql/parameters/synchronous_commit
+        value: "off"
+      - op: replace
+        path: /spec/backups/pgbackrest/repos/0/schedules/full
+        value: "0 3 * * 0"

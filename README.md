@@ -99,6 +99,8 @@ Start at [docs/00-index.md](docs/00-index.md), or jump straight in:
 | Measured performance results | [docs/10-performance-results.md](docs/10-performance-results.md) |
 | **Troubleshooting: the failures we actually hit** | [docs/11-troubleshooting.md](docs/11-troubleshooting.md) |
 | Driving the lab from an AI agent (MCP) | [docs/12-mcp-server.md](docs/12-mcp-server.md) |
+| Running on EKS / GKE / AKS — what changes from kind | [docs/13-cloud-kubernetes.md](docs/13-cloud-kubernetes.md) |
+| CI/CD: promoting a database change dev → staging → prod | [docs/14-cicd-promotion.md](docs/14-cicd-promotion.md) |
 
 ## Topologies
 
@@ -183,6 +185,7 @@ competing for the same Docker VM.
 
 ```
 clusters/      PerconaPGCluster manifests, one directory per topology
+environments/  base + dev/staging/prod overlays for the promotion pipeline
 operator/      operator Helm values
 observability/ kube-prometheus-stack values, exporter sidecars, alerts, dashboards
 backup/        MinIO (S3 target), pgBackRest repo config, backup/restore samples

@@ -1,0 +1,94 @@
+# prod.
+#
+# Everything staging has, at full size, plus the two things that only exist
+# here: an off-cluster backup repository and a retention policy long enough to
+# survive a problem nobody noticed for a week.
+#
+# Note there is no `image:` override anywhere in this pipeline. Every
+# environment runs the SAME image tags from the base, so promotion is a
+# promotion of *configuration* that has already been exercised — not a
+# rebuild. See docs/14-cicd-promotion.md#promote-configuration-not-images
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: app-prod
+resources:
+  - ../base
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: app-pg
+      percona-pg-lab.io/environment: prod
+
+patches:
+  - target:
+      kind: PerconaPGCluster
+      name: app-pg
+    patch: |-
+      - op: replace
+        path: /spec/instances/0/replicas
+        value: 3
+      - op: replace
+        path: /spec/instances/0/resources/requests/cpu
+        value: "2"
+      - op: replace
+        path: /spec/instances/0/resources/requests/memory
+        value: 8Gi
+      - op: replace
+        path: /spec/instances/0/resources/limits/cpu
+        value: "4"
+      - op: replace
+        path: /spec/instances/0/resources/limits/memory
+        value: 16Gi
+      - op: replace
+        path: /spec/instances/0/dataVolumeClaimSpec/resources/requests/storage
+        value: 500Gi
+      - op: replace
+        path: /spec/proxy/pgBouncer/replicas
+        value: 3
+      - op: replace
+        path: /spec/proxy/pgBouncer/config/global/default_pool_size
+        value: "25"
+      - op: replace
+        path: /spec/proxy/pgBouncer/config/global/max_client_conn
+        value: "1000"
+      - op: add
+        path: /spec/patroni/dynamicConfiguration/synchronous_mode
+        value: true
+      - op: add
+        path: /spec/patroni/dynamicConfiguration/synchronous_node_count
+        value: 1
+      # Sized for the 16Gi limit above, not for the node.
+      - op: replace
+        path: /spec/patroni/dynamicConfiguration/postgresql/parameters/shared_buffers
+        value: 4GB
+      - op: replace
+        path: /spec/patroni/dynamicConfiguration/postgresql/parameters/effective_cache_size
+        value: 12GB
+      - op: replace
+        path: /spec/patroni/dynamicConfiguration/postgresql/parameters/max_connections
+        value: "200"
+      # `add` with `/-` APPENDS to the list. A strategic merge here would have
+      # replaced repo1 instead of adding alongside it — which is to say, it
+      # would have deleted your local backups.
+      - op: add
+        path: /spec/backups/pgbackrest/repos/-
+        value:
+          name: repo2
+          schedules:
+            full: "0 1 * * 0"
+            incremental: "0 */4 * * *"
+          s3:
+            bucket: REPLACE-ME-prod-pg-backups
+            endpoint: s3.eu-west-1.amazonaws.com
+            region: eu-west-1
+      - op: add
+        path: /spec/backups/pgbackrest/global/repo2-retention-full
+        value: "8"
+      - op: add
+        path: /spec/backups/pgbackrest/global/repo2-retention-full-type
+        value: count
+      - op: add
+        path: /spec/backups/pgbackrest/configuration
+        value:
+          - secret:
+              name: app-pg-pgbackrest-s3

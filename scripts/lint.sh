@@ -74,6 +74,9 @@ else
   warn "kubeconform not installed — skipping (brew install kubeconform)"
 fi
 
+log "environment overlays"
+"${REPO_ROOT}/scripts/env-render.sh" >/dev/null 2>&1 && ok "all environments render and pass policy" || fail=1
+
 log "bats syntax"
 if command -v bats >/dev/null 2>&1; then
   bats --count "${REPO_ROOT}"/tests/*.bats >/dev/null && ok "all bats files parse" || fail=1

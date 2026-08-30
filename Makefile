@@ -113,6 +113,23 @@ pmm-down: ## Remove PMM
 	helm --kube-context $(KUBE_CONTEXT) uninstall pmm -n pmm || true
 	$(K) delete ns pmm --ignore-not-found
 
+##@ Environment promotion pipeline (see docs/14-cicd-promotion.md)
+
+.PHONY: env-render
+env-render: ## Render every environment overlay and validate it
+	@scripts/env-render.sh
+
+.PHONY: env-dev-up
+env-dev-up: ## Deploy the dev environment overlay into app-dev
+	$(K) get ns app-dev >/dev/null 2>&1 || $(K) create ns app-dev
+	$(K) apply -k environments/dev
+	$(K) -n app-dev wait --for=jsonpath='{.status.state}'=ready pg/app-pg --timeout=15m
+
+.PHONY: env-dev-down
+env-dev-down: ## Remove the dev environment overlay
+	-$(K) delete -k environments/dev --ignore-not-found
+	-$(K) -n app-dev delete pvc --all --ignore-not-found
+
 ##@ AI agent access (MCP)
 
 .PHONY: mcp-config

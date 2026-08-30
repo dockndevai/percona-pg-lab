@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "percona-pg-lab": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@dockndevai/mcp-percona-pg"
+      ],
+      "env": {
+        "PERCONA_MODE": "read-only",
+        "PERCONA_CONTEXT": "kind-pg-lab",
+        "PERCONA_NAMESPACE": "pg-ha",
+        "PERCONA_NAMESPACE_ALLOWLIST": "pg-ha,pg-dev,pg-dr"
+      }
+    }
+  }
+}

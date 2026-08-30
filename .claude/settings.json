@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "enableAllProjectMcpServers": true,
+  "permissions": {
+    "allow": [
+      "Bash(make help)",
+      "Bash(make status)",
+      "Bash(make preflight)",
+      "Bash(make lint)",
+      "Bash(make mcp-config)",
+      "Bash(kubectl --context kind-pg-lab get:*)",
+      "Bash(kubectl --context kind-pg-lab describe:*)",
+      "Bash(kubectl --context kind-pg-lab logs:*)",
+      "Bash(kubectl --context kind-pg-lab top:*)",
+      "Bash(kubectl kustomize:*)",
+      "Bash(kind get clusters)",
+      "Bash(helm list:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(shellcheck:*)",
+      "Bash(kubeconform:*)",
+      "Bash(bats --count:*)",
+      "mcp__percona-pg-lab__list_contexts",
+      "mcp__percona-pg-lab__list_clusters",
+      "mcp__percona-pg-lab__get_cluster",
+      "mcp__percona-pg-lab__get_cluster_status",
+      "mcp__percona-pg-lab__get_connection_info",
+      "mcp__percona-pg-lab__get_pgbouncer_config",
+      "mcp__percona-pg-lab__get_pg_parameters",
+      "mcp__percona-pg-lab__list_backups",
+      "mcp__percona-pg-lab__list_restores"
+    ],
+    "deny": [
+      "Bash(make nuke)",
+      "Bash(make dr-repo-clean)",
+      "Bash(kind delete:*)",
+      "Read(./**/*.key)",
+      "Read(./**/*.pem)",
+      "Read(.env)"
+    ]
+  }
+}

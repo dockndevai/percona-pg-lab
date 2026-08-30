@@ -1,0 +1,40 @@
+# staging — production's topology at a fraction of the size.
+#
+# The rule this encodes: staging differs from prod in CAPACITY, never in SHAPE.
+# Three instances with synchronous replication, because a failover that only
+# ever runs in production is not a tested failover. Smaller nodes, smaller
+# disks, shorter retention.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: app-staging
+resources:
+  - ../base
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: app-pg
+      percona-pg-lab.io/environment: staging
+
+patches:
+  - target:
+      kind: PerconaPGCluster
+      name: app-pg
+    patch: |-
+      - op: replace
+        path: /spec/instances/0/replicas
+        value: 3
+      - op: replace
+        path: /spec/proxy/pgBouncer/replicas
+        value: 2
+      - op: add
+        path: /spec/patroni/dynamicConfiguration/synchronous_mode
+        value: true
+      - op: add
+        path: /spec/patroni/dynamicConfiguration/synchronous_node_count
+        value: 1
+      - op: replace
+        path: /spec/proxy/pgBouncer/config/global/default_pool_size
+        value: "20"
+      - op: add
+        path: /spec/backups/pgbackrest/repos/0/schedules/differential
+        value: "0 2 * * 1-6"

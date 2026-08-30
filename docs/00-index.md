@@ -16,6 +16,13 @@ Read in order for a walkthrough, or jump to what you need.
 | 10 | [Performance results](10-performance-results.md) | Measured numbers, and how to reproduce them. |
 | 11 | [Troubleshooting](11-troubleshooting.md) | It broke. What now? |
 | 12 | [MCP server](12-mcp-server.md) | How do I let an AI agent operate this — safely? |
+| 13 | [Cloud Kubernetes](13-cloud-kubernetes.md) | What changes on EKS, GKE or AKS? |
+| 14 | [CI/CD promotion](14-cicd-promotion.md) | How do I get a change from dev to prod without breaking prod? |
+
+> **One page is not verified the way the rest are.**
+> [13-cloud-kubernetes](13-cloud-kubernetes.md) is reasoned from the operator's
+> CRD and provider documentation rather than measured on a cloud cluster, and it
+> says so at the top. Everything else here was observed on a running cluster.
 
 ## If you are in a hurry
 
