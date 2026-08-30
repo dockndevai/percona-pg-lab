@@ -1,0 +1,75 @@
+# ---------------------------------------------------------------------------
+# Profile: upgrade-demo
+#
+# A PostgreSQL 17 cluster whose only purpose is to be upgraded to 18, so you can
+# rehearse a major-version upgrade without doing it to something you care about.
+#
+# A major upgrade runs pg_upgrade, which means DOWNTIME FOR THE WHOLE CLUSTER —
+# not a rolling upgrade. Single instance here because adding replicas adds time
+# without adding anything to learn.
+#
+# See docs/09-lifecycle-operations.md#major-version-upgrades
+# ---------------------------------------------------------------------------
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGCluster
+metadata:
+  name: upgrade-cluster
+spec:
+  crVersion: 3.0.0
+  postgresVersion: 17
+  image: docker.io/percona/percona-distribution-postgresql:17.11.1-1
+  imagePullPolicy: IfNotPresent
+
+  instances:
+    - name: instance1
+      replicas: 1
+      dataVolumeClaimSpec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi
+      resources:
+        requests: {cpu: 250m, memory: 512Mi}
+        limits:   {cpu: "1",  memory: 1Gi}
+
+  proxy:
+    pgBouncer:
+      replicas: 1
+      image: docker.io/percona/percona-pgbouncer:1.25.1-1
+      resources:
+        requests: {cpu: 50m, memory: 64Mi}
+        limits:   {cpu: 200m, memory: 128Mi}
+      config:
+        global:
+          pool_mode: transaction
+          default_pool_size: "10"
+          max_client_conn: "200"
+          admin_users: upgrade-cluster
+          stats_users: upgrade-cluster
+          auth_dbname: upgrade-cluster
+
+  backups:
+    pgbackrest:
+      image: docker.io/percona/percona-pgbackrest:2.58.0-1
+      global:
+        repo1-retention-full: "1"
+        repo1-retention-full-type: count
+      repos:
+        - name: repo1
+          volume:
+            volumeClaimSpec:
+              accessModes: [ReadWriteOnce]
+              resources:
+                requests:
+                  storage: 2Gi
+      repoHost:
+        resources:
+          requests: {cpu: 25m, memory: 64Mi}
+          limits:   {cpu: 250m, memory: 256Mi}
+
+  patroni:
+    dynamicConfiguration:
+      postgresql:
+        parameters:
+          shared_buffers: 256MB
+          max_connections: "100"

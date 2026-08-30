@@ -1,0 +1,61 @@
+# Adds repo2 — a pgBackRest S3 repository on MinIO — to the HA cluster.
+#
+# Why a second repo at all: repo1 is a PVC, which lives and dies with the
+# namespace. Only an object-store repo can be read by a *different* cluster,
+# and that is the entire basis of the DR topology in clusters/dr-standby.
+#
+# Applied by scripts/s3-repo-up.sh with `kubectl patch --type merge`, because
+# repos is a list and a merge patch replaces it wholesale — so both repos are
+# restated here on purpose.
+spec:
+  backups:
+    pgbackrest:
+      configuration:
+        # Supplies repo2-s3-key / repo2-s3-key-secret. pgBackRest reads every
+        # projected file in its config directory, so the Secret key must end
+        # in .conf.
+        - secret:
+            name: pgbackrest-s3-creds
+      global:
+        repo1-retention-full: "2"
+        repo1-retention-full-type: count
+
+        # The repo path is the contract between the primary and the standby.
+        # clusters/dr-standby must name this EXACT path or it will initialise
+        # an empty stanza instead of finding the primary's backups.
+        repo2-path: /pgbackrest/pg-ha/ha-cluster/repo2
+        # MinIO serves path-style URLs (bucket in the path, not the hostname).
+        # Real AWS S3 wants "host". Getting this wrong yields DNS failures for
+        # <bucket>.<endpoint>.
+        repo2-s3-uri-style: path
+        # The MinIO certificate is self-signed, so skip verification. In
+        # production, mount your CA instead and leave verification on.
+        repo2-storage-verify-tls: "n"
+        repo2-retention-full: "2"
+        repo2-retention-full-type: count
+        # NOTE: archive-async is deliberately NOT enabled. It batches WAL
+        # pushes, which raises throughput but makes the latency of any single
+        # segment reaching the DR standby unpredictable — and that latency is
+        # exactly the RPO we want to measure. Turn it on for a write-heavy
+        # production cluster; leave it off when you care about a tight, legible
+        # RPO. See docs/06-backup-restore-pitr.md#rpo
+      repos:
+        - name: repo1
+          schedules:
+            full: "0 1 * * 0"
+            differential: "0 1 * * 1-6"
+            incremental: "0 */6 * * *"
+          volume:
+            volumeClaimSpec:
+              accessModes: [ReadWriteOnce]
+              resources:
+                requests:
+                  storage: 3Gi
+        - name: repo2
+          schedules:
+            full: "0 2 * * 0"
+            incremental: "0 */12 * * *"
+          s3:
+            bucket: pgbackrest
+            endpoint: minio.pg-backup.svc:9000
+            region: us-east-1

@@ -1,0 +1,22 @@
+# Triggers the PostgreSQL 17 -> 18 major version upgrade.
+#
+# Before applying:
+#   1. Take a full backup. pg_upgrade is in-place and there is no undo.
+#   2. Expect the cluster to be DOWN for the duration — this is not rolling.
+#
+# After it succeeds you must also update the cluster itself:
+#   kubectl -n pg-upgrade patch pg upgrade-cluster --type merge -p \
+#     '{"spec":{"postgresVersion":18,"image":"docker.io/percona/percona-distribution-postgresql:18.3-2"}}'
+# otherwise the operator sees a version mismatch and tries to put it back.
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGUpgrade
+metadata:
+  name: upgrade-17-to-18
+spec:
+  postgresClusterName: upgrade-cluster
+  image: docker.io/percona/percona-postgresql-operator:3.0.0-upgrade
+  fromPostgresVersion: 17
+  toPostgresVersion: 18
+  toPostgresImage: docker.io/percona/percona-distribution-postgresql:18.3-2
+  toPgBouncerImage: docker.io/percona/percona-pgbouncer:1.25.1-1
+  toPgBackRestImage: docker.io/percona/percona-pgbackrest:2.58.0-1

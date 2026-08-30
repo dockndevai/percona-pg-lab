@@ -1,0 +1,36 @@
+# Helm values for the Percona Operator for PostgreSQL (chart: percona/pg-operator).
+#
+# Install with:  make operator-install
+# or manually:
+#   helm upgrade --install pg-operator percona/pg-operator \
+#     --version 3.0.0 -n pg-operator --create-namespace -f operator/values.yaml
+
+# Cluster-wide mode. The lab deploys PerconaPGCluster resources into several
+# namespaces (pg-dev, pg-ha, pg-dr) from a single operator install, which is also
+# the topology most platform teams run in production.
+# Trade-off: this grants the operator RBAC across all namespaces. For a
+# single-tenant install, set this to false and the operator will only watch its
+# own release namespace. See docs/01-architecture.md#operator-scope
+watchAllNamespaces: true
+
+# Pinned so the lab is reproducible. Bump in scripts/lib.sh (OPERATOR_VERSION)
+# and here together.
+imagePullPolicy: IfNotPresent
+
+# The default 200m/500Mi is already modest; we trim requests further because the
+# lab shares a laptop with an HA cluster and a Prometheus stack.
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+logStructured: false
+logLevel: "INFO"
+
+# Percona collects anonymous usage telemetry by default. Off in the lab so that
+# repeated create/destroy cycles from CI don't skew anyone's numbers.
+# https://docs.percona.com/percona-operator-for-postgresql/telemetry.html
+disableTelemetry: true

@@ -1,0 +1,366 @@
+# ---------------------------------------------------------------------------
+# Profile: ha
+#
+# Three PostgreSQL instances under Patroni (one leader + two streaming
+# standbys) fronted by three pgBouncer replicas, with a dedicated pgBackRest
+# repo host. This is the shape you actually run in production.
+#
+# What it demonstrates:
+#   * Patroni leader election and automatic failover  (tests/30_failover.bats)
+#   * Synchronous replication with a durability floor of one confirmed standby
+#   * Read/write split: <cluster>-primary vs <cluster>-replicas Services
+#   * Zone-aware placement via anti-affinity + topology spread
+#   * pgBouncer as the single stable entry point across failovers
+#
+# Full walkthrough: docs/03-topologies.md#ha
+# ---------------------------------------------------------------------------
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGCluster
+metadata:
+  name: ha-cluster
+spec:
+  crVersion: 3.0.0
+  postgresVersion: 18
+  image: docker.io/percona/percona-distribution-postgresql:18.3-2
+  imagePullPolicy: IfNotPresent
+
+  instances:
+    - name: instance1
+      replicas: 3
+      dataVolumeClaimSpec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+
+      # requiredDuringScheduling, not preferred. With `preferred` (the upstream
+      # sample's default) Kubernetes will happily colocate two PostgreSQL pods
+      # on one node under pressure, which silently destroys the availability
+      # guarantee you think you bought. If a pod can't be placed, you want it
+      # Pending and visible — not quietly stacked.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  postgres-operator.crunchydata.com/cluster: ha-cluster
+                  postgres-operator.crunchydata.com/data: postgres
+              topologyKey: kubernetes.io/hostname
+
+      # Prometheus exporter, as a sidecar rather than a central Deployment.
+      # A central scraper behind the headless Service would round-robin and
+      # could not tell the primary from a replica — and that distinction is
+      # most of what you want from these metrics.
+      # Scraped by observability/kube-prometheus-stack/servicemonitors.yaml.
+      sidecars:
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+          ports:
+            - {name: pg-metrics, containerPort: 9187, protocol: TCP}
+          env:
+            # sslmode=require, over loopback. An ordinary user matches the
+            # operator's final pg_hba rule — hostssl all all all scram-sha-256 —
+            # which requires TLS even from 127.0.0.1.
+            - name: DATA_SOURCE_URI
+              value: "127.0.0.1:5432/postgres?sslmode=require"
+            - name: DATA_SOURCE_USER
+              valueFrom:
+                secretKeyRef: {name: ha-cluster-pguser-pgexporter, key: user}
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef: {name: ha-cluster-pguser-pgexporter, key: password}
+            # Per-database collection multiplies series count for little insight
+            # at this scale.
+            - name: PG_EXPORTER_AUTO_DISCOVER_DATABASES
+              value: "false"
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits:   {cpu: 100m, memory: 96Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            # Numeric, deliberately. The image declares `USER nobody` — a name,
+            # not a UID — and the kubelet cannot verify a name is non-root:
+            #   Error: container has runAsNonRoot and image has non-numeric
+            #   user (nobody), cannot verify user is non-root
+            runAsUser: 65534
+            runAsGroup: 65534
+            capabilities: {drop: [ALL]}
+
+      # NOTE: do NOT add a topologySpreadConstraint here for
+      # topology.kubernetes.io/zone or kubernetes.io/hostname with
+      # whenUnsatisfiable: ScheduleAnyway. The operator already injects both,
+      # and server-side apply keys these by (topologyKey, whenUnsatisfiable) —
+      # a duplicate makes reconciliation fail hard with
+      #   .spec.template.spec.topologySpreadConstraints: duplicate entries for key
+      # The cluster then sits in state=initializing with NO pods and NO events
+      # on the CR; the error is only visible in the operator log.
+      # See docs/11-troubleshooting.md#duplicate-topology-spread-constraints
+      #
+      # Zone spread is therefore inherited from the operator defaults:
+      #   maxSkew 1 / kubernetes.io/hostname   / ScheduleAnyway
+      #   maxSkew 1 / topology.kubernetes.io/zone / ScheduleAnyway
+      # The requiredDuringScheduling anti-affinity above is what actually
+      # guarantees one PostgreSQL pod per node; the spread constraints only
+      # nudge.
+
+  proxy:
+    pgBouncer:
+      replicas: 3
+      image: docker.io/percona/percona-pgbouncer:1.25.1-1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    postgres-operator.crunchydata.com/cluster: ha-cluster
+                    postgres-operator.crunchydata.com/role: pgbouncer
+                topologyKey: kubernetes.io/hostname
+      config:
+        global:
+          # See docs/04-connection-pooling.md for the sizing derivation.
+          # 3 poolers x default_pool_size 25 = 75 backends worst case, which
+          # must stay under PostgreSQL max_connections (200) minus the
+          # superuser/replication reserve. It does, with room to spare.
+          pool_mode: transaction
+          default_pool_size: "25"
+          min_pool_size: "5"
+          reserve_pool_size: "5"
+          reserve_pool_timeout: "3"
+          max_client_conn: "1000"
+          max_db_connections: "60"
+          # Bound how long a client waits for a backend before failing fast.
+          # Without this, a saturated pool turns into an unbounded queue and
+          # your p99 becomes a timeout.
+          query_wait_timeout: "60"
+          server_idle_timeout: "180"
+          # Reconnect quickly after a failover instead of the 15s default.
+          server_login_retry: "2"
+          # Admin console — required for pgbouncer_exporter and SHOW POOLS.
+          # auth_dbname must name a real database; see
+          # docs/04-connection-pooling.md#admin-console
+          admin_users: ha-cluster
+          stats_users: ha-cluster
+          auth_dbname: ha-cluster
+
+      sidecars:
+        - name: pgbouncer-exporter
+          image: quay.io/prometheuscommunity/pgbouncer-exporter:v0.11.0
+          args:
+            - "--pgBouncer.connectionString=postgres://$(PGB_USER):$(PGB_PASS)@127.0.0.1:5432/pgbouncer?sslmode=require"
+            - "--web.listen-address=:9127"
+          ports:
+            - {name: pgb-metrics, containerPort: 9127, protocol: TCP}
+          env:
+            # sslmode=require even over loopback — the operator forces
+            # client_tls_sslmode=require on pgBouncer.
+            - name: PGB_USER
+              valueFrom:
+                secretKeyRef: {name: ha-cluster-pguser-ha-cluster, key: user}
+            - name: PGB_PASS
+              valueFrom:
+                secretKeyRef: {name: ha-cluster-pguser-ha-cluster, key: password}
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits:   {cpu: 100m, memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            capabilities: {drop: [ALL]}
+
+  backups:
+    pgbackrest:
+      image: docker.io/percona/percona-pgbackrest:2.58.0-1
+      global:
+        repo1-retention-full: "2"
+        repo1-retention-full-type: count
+      repos:
+        - name: repo1
+          schedules:
+            full: "0 1 * * 0"          # weekly full,   Sunday 01:00
+            differential: "0 1 * * 1-6" # daily diff,    Mon-Sat 01:00
+            incremental: "0 */6 * * *"  # 6-hourly incremental
+          volume:
+            volumeClaimSpec:
+              accessModes: [ReadWriteOnce]
+              resources:
+                requests:
+                  storage: 3Gi
+      repoHost:
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+
+  patroni:
+    # Failure detection budget. The leader lease is 30s and Patroni polls every
+    # 10s, so worst-case detection is ~30s and the derived probe settings are
+    # timeout=5s, period=10s, failureThreshold=3. Shortening these speeds up
+    # failover but makes spurious failovers more likely on a loaded node —
+    # see docs/05-postgres-tuning.md#failover-timing
+    syncPeriodSeconds: 10
+    leaderLeaseDurationSeconds: 30
+
+    # Let Patroni rebuild a replica whose timeline has diverged from the
+    # leader's, instead of leaving it wedged forever.
+    #
+    # A replica can end up on a timeline the current leader never took — for
+    # example if it was briefly promoted during a rolling restart and the
+    # cluster then settled on a different leader. PostgreSQL cannot reconcile
+    # that; the replica just repeats
+    #     FATAL: highest timeline 6 of the primary is behind recovery timeline 7
+    #     LOG:   waiting for WAL to become available at 0/2F000018
+    # forever, while patronictl shows it as "in archive recovery" with a lag
+    # that never shrinks. The cluster stays at state=initializing and 2/3 ready.
+    #
+    # The trade-off is real: this DESTROYS the diverged replica's data directory
+    # and rebuilds it from the leader. For a replica that is exactly what you
+    # want — its data is by definition unreachable. Never assume the same is
+    # safe for a former primary you might still want to forensically examine.
+    #
+    # To recover a replica that is already wedged:
+    #   patronictl -c /etc/patroni/~postgres-operator_cluster.yaml \
+    #     reinit <cluster>-ha <member-pod> --force
+    # See docs/11-troubleshooting.md#a-replica-is-stuck-in-archive-recovery
+    removeDataDirectoryOnDivergedTimelines: true
+
+    dynamicConfiguration:
+      # Patroni-level (DCS) settings live here, NOT under postgresql.parameters.
+      # synchronous_mode makes Patroni maintain synchronous_standby_names for
+      # you and refuse to promote a standby that was not in sync — this is what
+      # turns "probably no data loss" into "no data loss".
+      synchronous_mode: true
+      # strict=false: if the last standby dies, fall back to async rather than
+      # blocking all writes. Flip to true when correctness outranks uptime.
+      synchronous_mode_strict: false
+      synchronous_node_count: 1
+      failsafe_mode: true
+
+      postgresql:
+        parameters:
+          # Memory — sized against the 1Gi container limit.
+          shared_buffers: 256MB
+          effective_cache_size: 768MB
+          work_mem: 4MB
+          maintenance_work_mem: 64MB
+
+          # Connections. Deliberately modest: pgBouncer exists precisely so
+          # this number can stay small. Every backend costs ~10MB of memory
+          # plus snapshot/lock contention. See
+          # docs/04-connection-pooling.md#why-not-just-raise-max-connections
+          max_connections: "200"
+          superuser_reserved_connections: "5"
+
+          # Durability. on = commit waits for the sync standby's WAL flush.
+          synchronous_commit: "on"
+
+          # Replication
+          max_wal_senders: "10"
+          max_replication_slots: "10"
+          wal_keep_size: 512MB
+          hot_standby_feedback: "on"
+
+          # WAL / checkpoints. Spreading checkpoints over 90% of the interval
+          # avoids the write stall you get with the 0.5 default.
+          wal_compression: "on"
+          min_wal_size: 128MB
+          max_wal_size: 1GB
+          checkpoint_timeout: "15min"
+          checkpoint_completion_target: "0.9"
+
+          # Parallelism — kept low; 250m CPU request cannot feed many workers.
+          max_worker_processes: "8"
+          max_parallel_workers: "2"
+          max_parallel_workers_per_gather: "1"
+
+          # Autovacuum: more aggressive than default because a pooled workload
+          # concentrates churn onto few hot tables.
+          autovacuum_vacuum_scale_factor: "0.05"
+          autovacuum_analyze_scale_factor: "0.02"
+          autovacuum_naptime: "30s"
+
+          # Observability
+          track_io_timing: "on"
+          track_functions: pl
+          log_min_duration_statement: "1000"
+          log_checkpoints: "on"
+          log_lock_waits: "on"
+          log_autovacuum_min_duration: "0"
+
+    createReplicaMethods:
+      # Prefer rebuilding a replica from the backup repo (cheap, no load on the
+      # primary) and only fall back to a direct basebackup.
+      - pgbackrest
+      - basebackup
+
+  users:
+    # The user named after the cluster is created automatically; it is declared
+    # here only to pin its password type.
+    - name: ha-cluster
+      databases: [ha-cluster]
+      password:
+        # AlphaNumeric, not the ASCII default.
+        #
+        # ASCII-generated passwords contain @ [ ] / ? : — every one of which is
+        # structural in a postgres:// URL. This password is interpolated into
+        # the pgbouncer_exporter DSN above, and with the default type the
+        # exporter dies at startup with:
+        #   parse "postgres://ha-cluster:@[N/MY4[@D*7k^tXLiAy?f>q@127.0.0.1:...":
+        #   missing ']' in host
+        # URL-encoding in shell is fragile; removing the character class is not.
+        type: AlphaNumeric
+
+    # A least-privilege application account, and what the perf harness uses.
+    - name: appuser
+      databases: [appdb]
+      password:
+        type: AlphaNumeric
+      grantPublicSchemaAccess: true
+
+    # The metrics account for the postgres-exporter sidecar.
+    #
+    # NOT called `monitor`: that name is RESERVED. Declaring it does nothing at
+    # all — the operator logs "monitor user is reserved, it'll be ignored." at
+    # INFO level, never creates the Secret, and the sidecar wedges in
+    # CreateContainerConfigError forever.
+    # See docs/11-troubleshooting.md#the-monitor-username-is-reserved
+    #
+    # No `databases:` — it connects to `postgres` and reads cluster-wide
+    # statistics views.
+    #
+    # NOTE there is deliberately no `options:` granting pg_monitor here.
+    # spec.users[].options is applied as ALTER ROLE attributes at role CREATION
+    # only, and role *membership* is not an attribute — neither
+    # `options: "pg_monitor"` nor `options: "IN ROLE pg_monitor"` grants
+    # anything. Both are accepted silently and do nothing, which is worse than
+    # an error. Verified: pg_auth_members stays empty.
+    #
+    # The grant is issued explicitly by scripts/obs-up.sh:
+    #     GRANT pg_monitor TO pgexporter;
+    # and asserted by tests/90_observability.bats.
+    - name: pgexporter
+      password:
+        type: AlphaNumeric

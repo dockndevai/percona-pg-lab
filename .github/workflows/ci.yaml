@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          python3 -m pip install --quiet pyyaml
+          curl -sSL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          sudo tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+          npm install -g bats@1.11.0
+
+      - run: make lint
+
+  smoke:
+    name: smoke (dev-standalone on kind)
+    runs-on: ubuntu-latest
+    # The full HA profile plus monitoring does not fit a standard GitHub runner
+    # (2 CPU / 7 GiB). The dev profile does, and it exercises the whole path:
+    # cluster, operator, CR reconciliation, pgBouncer, and a real query.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: helm/kind-action@v1
+        with:
+          version: v0.33.0
+          cluster_name: pg-lab
+          config: kind/pg-lab-ci.yaml
+          wait: 180s
+
+      - name: Install bats
+        run: npm install -g bats@1.11.0
+
+      - name: Install the operator
+        run: SKIP_PRELOAD=1 make operator-install
+
+      - name: Deploy the dev profile
+        run: READY_TIMEOUT=1500 make dev-up
+
+      - name: Run the test suite
+        run: scripts/run-tests.sh 00_operator.bats 10_dev_standalone.bats
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl -n pg-operator logs deploy/pg-operator --tail=200 || true
+          kubectl -n pg-dev describe pg dev-cluster || true
+          kubectl -n pg-dev get events --sort-by=.lastTimestamp || true

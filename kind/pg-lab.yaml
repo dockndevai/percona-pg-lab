@@ -1,0 +1,46 @@
+# kind cluster for the Percona PostgreSQL operator lab.
+#
+# Four nodes (1 control-plane + 3 workers) so that pod anti-affinity and
+# topologySpreadConstraints in clusters/ha actually have somewhere to spread to.
+# Each worker carries a distinct topology.kubernetes.io/zone label, which lets us
+# demonstrate zone-aware placement without a cloud provider.
+#
+# Note: kind nodes are containers on one Docker VM, so this buys you *scheduling*
+# realism, not failure-domain realism. See docs/03-topologies.md.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: pg-lab
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # Grafana, exposed via NodePort 30300 by observability/kube-prometheus-stack
+      - containerPort: 30300
+        hostPort: 30300
+        protocol: TCP
+      # Prometheus, NodePort 30900
+      - containerPort: 30900
+        hostPort: 30900
+        protocol: TCP
+      # MinIO console, NodePort 30901
+      - containerPort: 30901
+        hostPort: 30901
+        protocol: TCP
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    labels:
+      topology.kubernetes.io/zone: zone-a
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    labels:
+      topology.kubernetes.io/zone: zone-b
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    labels:
+      topology.kubernetes.io/zone: zone-c

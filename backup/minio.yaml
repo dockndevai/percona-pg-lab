@@ -1,0 +1,95 @@
+# MinIO as a stand-in for S3.
+#
+# The point is not MinIO itself — it is that pgBackRest's S3 repository type is
+# what makes cross-cluster DR possible. A PVC-backed repo lives and dies with
+# the cluster's namespace; an object-store repo can be read by a completely
+# separate cluster, which is exactly what clusters/dr-standby does.
+#
+# TLS is not optional here: pgBackRest speaks S3 over HTTPS only, with no
+# plain-HTTP mode. scripts/minio-up.sh generates a self-signed certificate at
+# deploy time (SAN: minio.pg-backup.svc) and the clusters set
+# repo2-storage-verify-tls=n to accept it. The private key is generated locally
+# and never committed.
+#
+# Single drive, hard-coded credentials: this is a lab. Do not copy this file
+# into a production cluster.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-root
+type: Opaque
+stringData:
+  MINIO_ROOT_USER: pglabaccess
+  MINIO_ROOT_PASSWORD: pglabsecretkey123
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels: {app: minio}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}     # a single RWO volume cannot be shared
+  selector:
+    matchLabels: {app: minio}
+  template:
+    metadata:
+      labels: {app: minio}
+    spec:
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+          args: ["server", "/data", "--console-address", ":9001", "--certs-dir", "/certs"]
+          envFrom:
+            - secretRef: {name: minio-root}
+          ports:
+            - {containerPort: 9000, name: s3}
+            - {containerPort: 9001, name: console}
+          resources:
+            requests: {cpu: 50m, memory: 256Mi}
+            limits:   {cpu: 500m, memory: 512Mi}
+          readinessProbe:
+            httpGet: {path: /minio/health/ready, port: 9000, scheme: HTTPS}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: certs, mountPath: /certs, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: minio-data}
+        - name: certs
+          secret:
+            secretName: minio-tls
+            items:
+              - {key: tls.crt, path: public.crt}
+              - {key: tls.key, path: private.key}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+spec:
+  selector: {app: minio}
+  ports:
+    - {name: s3, port: 9000, targetPort: 9000}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-console
+spec:
+  type: NodePort
+  selector: {app: minio}
+  ports:
+    - {name: console, port: 9001, targetPort: 9001, nodePort: 30901}

@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: pg-dr
+resources:
+  - cluster.yaml
+labels:
+  - includeSelectors: false
+    pairs:
+      percona-pg-lab.io/profile: dr-standby

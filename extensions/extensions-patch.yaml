@@ -1,0 +1,57 @@
+# Enables PostgreSQL extensions on the HA cluster.
+#
+# ============================================================================
+# READ THIS BEFORE ADDING A SECOND PRELOAD-REQUIRING EXTENSION
+#
+# In operator v3.0.0, spec.extensions.builtin sets shared_preload_libraries to
+# exactly ONE library. It does not build a list. Enable two extensions that both
+# need preloading and only one of them is installed — the other is silently
+# skipped, with no error, no event, and no CR condition.
+#
+# Measured, with pg_audit, pg_stat_monitor and pg_stat_statements all set true:
+#     shared_preload_libraries -> pg_stat_monitor        (one library)
+#     pg_extension             -> pg_stat_monitor, vector, plpgsql
+#     select * from pg_stat_statements
+#       -> ERROR: pg_stat_statements must be loaded via "shared_preload_libraries"
+#
+# With pg_stat_statements alone:
+#     shared_preload_libraries -> pg_stat_statements
+#     select * from pg_stat_statements -> works
+#
+# Setting shared_preload_libraries yourself under patroni.dynamicConfiguration
+# does NOT work around it: the operator appends to your value and then
+# overwrites it on the next reconcile, and you end up with duplicates like
+#     pg_stat_statements,pg_stat_monitor,pgaudit,pg_stat_monitor
+# before it settles back to one.
+#
+# So: pick ONE preload extension. pgvector needs no preloading and can always
+# be enabled alongside.
+# See docs/08-extensions.md#only-one-preload-extension-at-a-time
+# ============================================================================
+spec:
+  extensions:
+    builtin:
+      # The one preload extension. pg_stat_statements over pg_stat_monitor
+      # because it is standard PostgreSQL, every tool understands it, and its
+      # per-query-shape aggregation is what you reach for first.
+      # Swap to pg_stat_monitor if you want histograms and time buckets — but
+      # you cannot have both.
+      pg_stat_statements: true
+
+      pg_stat_monitor: false
+      pg_audit: false        # would displace pg_stat_statements
+      pg_repack: false       # needs a client binary to be useful
+
+      # No preloading required, so this is free to enable alongside.
+      pgvector: true
+
+  patroni:
+    dynamicConfiguration:
+      postgresql:
+        parameters:
+          # Tuning only — shared_preload_libraries is the operator's, not yours.
+          #
+          # The 5000 default is low for a pooled workload: many distinct
+          # prepared-statement shapes evict entries faster than you expect.
+          pg_stat_statements.max: "10000"
+          pg_stat_statements.track: "top"

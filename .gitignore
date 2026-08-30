@@ -1,0 +1,19 @@
+# Local run artifacts
+.out/
+perf/results/*.csv
+perf/results/*.json
+!perf/results/.gitkeep
+*.log
+
+# Kubeconfigs and secrets — never commit these
+kubeconfig
+*.kubeconfig
+.env
+*.pem
+*.key
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

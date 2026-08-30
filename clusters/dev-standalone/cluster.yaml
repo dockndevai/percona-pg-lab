@@ -1,0 +1,118 @@
+# ---------------------------------------------------------------------------
+# Profile: dev-standalone
+#
+# The smallest thing that is still a real Percona PostgreSQL cluster: one
+# PostgreSQL instance, one pgBouncer, one local pgBackRest repository.
+#
+# Use it for: laptop development, CI smoke tests, "does my migration apply?".
+# Do NOT use it for: anything you care about. A single instance means Patroni has
+# nobody to fail over to — losing the pod means downtime until it reschedules,
+# and losing the PVC means restoring from backup.
+#
+# Full walkthrough: docs/03-topologies.md#dev-standalone
+# ---------------------------------------------------------------------------
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGCluster
+metadata:
+  name: dev-cluster
+spec:
+  crVersion: 3.0.0
+  postgresVersion: 18
+  image: docker.io/percona/percona-distribution-postgresql:18.3-2
+  imagePullPolicy: IfNotPresent
+
+  instances:
+    - name: instance1
+      replicas: 1
+      # 1Gi is enough for pgbench scale 10 plus WAL headroom. The operator can
+      # grow this later if the StorageClass allows expansion (kind's local-path
+      # does not — see docs/11-troubleshooting.md#pvc-resize).
+      dataVolumeClaimSpec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+
+  proxy:
+    pgBouncer:
+      replicas: 1
+      image: docker.io/percona/percona-pgbouncer:1.25.1-1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      config:
+        global:
+          # transaction pooling is the right default for a dev app server:
+          # it multiplexes far more clients onto few backends. It also breaks
+          # session-scoped features — the full matrix is in
+          # docs/04-connection-pooling.md#pool-modes
+          pool_mode: transaction
+          default_pool_size: "10"
+          max_client_conn: "200"
+          # --- pgBouncer admin console -------------------------------------
+          # Without these three, `psql -d pgbouncer` fails with
+          #   "cannot use the reserved pgbouncer database as an auth_dbname"
+          # because the operator writes a wildcard [databases] entry plus a
+          # global auth_user. auth_dbname must name a REAL database.
+          # This is also what pgbouncer_exporter needs. See
+          # docs/04-connection-pooling.md#admin-console
+          admin_users: dev-cluster
+          stats_users: dev-cluster
+          auth_dbname: dev-cluster
+
+  backups:
+    pgbackrest:
+      image: docker.io/percona/percona-pgbackrest:2.58.0-1
+      global:
+        # Keep two full backups on the local repo. Without a retention policy
+        # pgBackRest never expires anything and the PVC fills up silently.
+        repo1-retention-full: "2"
+        repo1-retention-full-type: count
+      repos:
+        - name: repo1
+          schedules:
+            full: "0 3 * * 0"       # Sunday 03:00
+          volume:
+            volumeClaimSpec:
+              accessModes: [ReadWriteOnce]
+              resources:
+                requests:
+                  storage: 2Gi
+      repoHost:
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+
+  patroni:
+    dynamicConfiguration:
+      postgresql:
+        parameters:
+          # Sized for the 1Gi memory limit above. The reasoning behind every one
+          # of these numbers is in docs/05-postgres-tuning.md
+          shared_buffers: 256MB
+          effective_cache_size: 768MB
+          work_mem: 4MB
+          maintenance_work_mem: 64MB
+          max_connections: "100"
+          # A dev box does not need crash-durability guarantees, and turning
+          # this off is the single biggest write-throughput win available.
+          # NEVER do this in production: an OS crash loses recent commits.
+          synchronous_commit: "off"
+          # Surface slow queries and enable pg_stat_statements bookkeeping.
+          log_min_duration_statement: "500"
+          track_io_timing: "on"

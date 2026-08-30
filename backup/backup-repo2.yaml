@@ -1,0 +1,11 @@
+# On-demand full backup to the MinIO (S3) repository.
+# Apply with a unique name, or use scripts/backup.sh which generates one.
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGBackup
+metadata:
+  name: manual-repo2
+spec:
+  pgCluster: ha-cluster
+  repoName: repo2
+  options:
+    - --type=full

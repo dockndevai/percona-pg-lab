@@ -1,0 +1,72 @@
+# kube-prometheus-stack, trimmed to what a laptop can carry alongside a
+# three-node PostgreSQL cluster.
+#
+# The removals are deliberate, not cargo-culted:
+#  * Alertmanager is off — the rules in prometheus-rules.yaml are here to be
+#    *read* and to fire visibly in Prometheus, not to page anyone. It saves
+#    ~200Mi.
+#  * Retention is 2h. This lab is for watching behaviour during an experiment,
+#    not for capacity planning.
+#  * The control-plane scrape jobs are off because kind does not expose
+#    kube-scheduler/kube-controller-manager metrics, and leaving them on just
+#    produces permanently red targets that train you to ignore red targets.
+
+alertmanager:
+  enabled: false
+
+grafana:
+  enabled: true
+  adminPassword: pglab
+  service:
+    type: NodePort
+    nodePort: 30300
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits:   {cpu: 300m, memory: 256Mi}
+  # Dashboards are loaded from ConfigMaps labelled grafana_dashboard=1, which
+  # is how observability/dashboards/*.json get in.
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+  defaultDashboardsEnabled: true
+
+prometheus:
+  service:
+    type: NodePort
+    nodePort: 30900
+  prometheusSpec:
+    retention: 2h
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    resources:
+      requests: {cpu: 100m, memory: 512Mi}
+      limits:   {cpu: "1",  memory: 1Gi}
+    # Pick up ServiceMonitors/PodMonitors in every namespace regardless of
+    # helm release labels — without these three, the PostgreSQL monitors in
+    # another namespace are silently ignored. This is the single most common
+    # reason "my exporter isn't being scraped".
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    # 2h of data at 15s does not need a big volume; emptyDir keeps the lab
+    # fast to tear down.
+    storageSpec: {}
+
+# kind does not expose these; scraping them only manufactures red targets.
+kubeScheduler:         {enabled: false}
+kubeControllerManager: {enabled: false}
+kubeProxy:             {enabled: false}
+kubeEtcd:              {enabled: false}
+
+prometheus-node-exporter:
+  resources:
+    requests: {cpu: 10m, memory: 24Mi}
+    limits:   {cpu: 100m, memory: 64Mi}
+
+kube-state-metrics:
+  resources:
+    requests: {cpu: 10m, memory: 48Mi}
+    limits:   {cpu: 100m, memory: 128Mi}

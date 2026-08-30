@@ -1,0 +1,125 @@
+# ---------------------------------------------------------------------------
+# Profile: dr-standby
+#
+# A completely separate PerconaPGCluster, in its own namespace, that continuously
+# replays the primary cluster's WAL out of shared object storage. It never
+# connects to the primary — the pgBackRest repository is the only coupling.
+#
+# That indirection is the whole point: it survives the primary's namespace, its
+# nodes, and (in a real deployment) its region being gone. Streaming replication
+# cannot do that, because it needs a reachable primary.
+#
+# Two things must line up exactly or the standby will silently initialise an
+# empty stanza instead of finding the primary's backups:
+#   1. repo2-path      — identical on both clusters
+#   2. postgresVersion — a standby cannot replay WAL from a different major
+#
+# Promote it with `make dr-promote`. Full walkthrough:
+# docs/06-backup-restore-pitr.md#disaster-recovery
+# ---------------------------------------------------------------------------
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGCluster
+metadata:
+  name: dr-cluster
+spec:
+  crVersion: 3.0.0
+  postgresVersion: 18
+  image: docker.io/percona/percona-distribution-postgresql:18.3-2
+  imagePullPolicy: IfNotPresent
+
+  # THE switch. While this is true the cluster runs read-only, replaying WAL
+  # from repoName and refusing writes. Setting enabled:false promotes it.
+  standby:
+    enabled: true
+    repoName: repo2
+
+  instances:
+    - name: instance1
+      # One instance: a DR site is about having the data somewhere else, not
+      # about being highly available on its own. Scale it up after promotion.
+      replicas: 1
+      dataVolumeClaimSpec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+
+  proxy:
+    pgBouncer:
+      replicas: 1
+      image: docker.io/percona/percona-pgbouncer:1.25.1-1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      config:
+        global:
+          pool_mode: transaction
+          default_pool_size: "10"
+          max_client_conn: "200"
+          admin_users: dr-cluster
+          stats_users: dr-cluster
+          auth_dbname: dr-cluster
+
+  backups:
+    pgbackrest:
+      image: docker.io/percona/percona-pgbackrest:2.58.0-1
+      configuration:
+        - secret:
+            name: pgbackrest-s3-creds
+      global:
+        # Must match clusters/ha exactly — this is how the standby finds the
+        # primary's backups. A typo here does not error; it just produces an
+        # empty stanza and a cluster that never catches up.
+        repo2-path: /pgbackrest/pg-ha/ha-cluster/repo2
+        repo2-s3-uri-style: path
+        repo2-storage-verify-tls: "n"
+        # Set explicitly even though this cluster never writes backups —
+        # pgBackRest warns on every invocation when retention-full-type is
+        # count with no matching retention-full.
+        repo2-retention-full: "2"
+        repo2-retention-full-type: count
+      repos:
+        # Only repo2, and deliberately with no `schedules`. The standby must not
+        # write backups into the primary's repository — two clusters running
+        # expire against one stanza will delete each other's backups.
+        - name: repo2
+          s3:
+            bucket: pgbackrest
+            endpoint: minio.pg-backup.svc:9000
+            region: us-east-1
+
+  patroni:
+    # basebackup only, deliberately.
+    #
+    # With the default (pgbackrest first), the operator schedules a
+    # "replica-create" backup job against this cluster. A standby has no
+    # primary, so pgBackRest fails it every time:
+    #     ERROR: [056]: unable to find primary cluster - cannot proceed
+    #     HINT: are all available clusters in recovery?
+    # The cluster still reports ready and still replays WAL, but you are left
+    # with a permanently retrying Job that looks like a real outage on a
+    # dashboard. Restricting the replica-create method removes the job entirely.
+    # Verified: the operator stops recreating it and state stays ready.
+    # See docs/11-troubleshooting.md#failing-backup-job-on-a-standby-cluster
+    createReplicaMethods:
+      - basebackup
+
+    dynamicConfiguration:
+      postgresql:
+        parameters:
+          shared_buffers: 256MB
+          effective_cache_size: 768MB
+          max_connections: "100"
+          hot_standby_feedback: "on"
+          track_io_timing: "on"

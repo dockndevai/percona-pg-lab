@@ -1,0 +1,58 @@
+# Scrape targets for the PostgreSQL and pgBouncer exporter sidecars.
+#
+# Both select on the operator's own labels, so they keep working across
+# failovers, scale-ups and cluster recreation without edits.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: percona-pg-instances
+  labels:
+    percona-pg-lab.io/component: observability
+spec:
+  # PodMonitor rather than ServiceMonitor: the instance pods are fronted by a
+  # headless Service that resolves to whichever pod is primary, so a
+  # ServiceMonitor would scrape a moving target and lose per-instance identity.
+  namespaceSelector:
+    matchNames: [pg-ha, pg-dev, pg-dr]
+  selector:
+    matchLabels:
+      postgres-operator.crunchydata.com/data: postgres
+  podMetricsEndpoints:
+    - port: pg-metrics
+      interval: 15s
+      path: /metrics
+      relabelings:
+        # Carry the operator's identity labels into every series so a Grafana
+        # panel can split primary from replica.
+        - sourceLabels: [__meta_kubernetes_pod_label_postgres_operator_crunchydata_com_cluster]
+          targetLabel: pg_cluster
+        - sourceLabels: [__meta_kubernetes_pod_label_postgres_operator_crunchydata_com_role]
+          targetLabel: pg_role
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pg_pod
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: pg_namespace
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: percona-pgbouncer
+  labels:
+    percona-pg-lab.io/component: observability
+spec:
+  namespaceSelector:
+    matchNames: [pg-ha, pg-dev, pg-dr]
+  selector:
+    matchLabels:
+      postgres-operator.crunchydata.com/role: pgbouncer
+  podMetricsEndpoints:
+    - port: pgb-metrics
+      interval: 15s
+      path: /metrics
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_postgres_operator_crunchydata_com_cluster]
+          targetLabel: pg_cluster
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pgbouncer_pod
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: pg_namespace

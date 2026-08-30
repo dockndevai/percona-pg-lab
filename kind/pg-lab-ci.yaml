@@ -1,0 +1,13 @@
+# Single-node kind cluster for CI.
+#
+# GitHub's standard runner is 2 CPU / 7 GiB, which cannot carry the four-node
+# cluster in pg-lab.yaml on top of the runner's own overhead. CI therefore runs
+# the dev-standalone profile on one node — enough to exercise operator install,
+# CR reconciliation, pgBouncer and a real query, which is what a smoke test is
+# for. Placement and failover behaviour need the multi-node config and are
+# verified locally.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: pg-lab
+nodes:
+  - role: control-plane
