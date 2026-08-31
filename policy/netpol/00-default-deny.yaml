@@ -1,0 +1,16 @@
+# Default deny, both directions, for the whole namespace.
+#
+# NetworkPolicy is additive: with no policy selecting a pod, everything is
+# allowed. This is the policy that flips the namespace to deny-by-default, and
+# every other file here re-opens exactly one flow.
+#
+# Apply this LAST when adding policies to a live namespace and FIRST when
+# building a new one — the moment it lands, anything you have not explicitly
+# allowed stops working.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

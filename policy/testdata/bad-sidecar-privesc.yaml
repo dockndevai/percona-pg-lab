@@ -1,0 +1,61 @@
+# GENERATED — must be DENIED.
+# Violates exactly ONE rule: sidecar allows privilege escalation
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGCluster
+metadata:
+  name: policy-probe
+spec:
+  crVersion: 3.0.0
+  postgresVersion: 18
+  image: docker.io/percona/percona-distribution-postgresql:18.3-2
+  instances:
+  - name: instance1
+    replicas: 3
+    dataVolumeClaimSpec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: '1'
+        memory: 1Gi
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: postgres
+          topologyKey: kubernetes.io/hostname
+    sidecars:
+    - name: esc
+      image: busybox
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        allowPrivilegeEscalation: true
+  proxy:
+    pgBouncer:
+      replicas: 1
+      image: docker.io/percona/percona-pgbouncer:1.25.1-1
+  backups:
+    pgbackrest:
+      image: docker.io/percona/percona-pgbackrest:2.58.0-1
+      global:
+        repo1-retention-full: '2'
+      repos:
+      - name: repo1
+        volume:
+          volumeClaimSpec:
+            accessModes:
+            - ReadWriteOnce
+            resources:
+              requests:
+                storage: 1Gi
+  patroni:
+    dynamicConfiguration:
+      synchronous_mode: true

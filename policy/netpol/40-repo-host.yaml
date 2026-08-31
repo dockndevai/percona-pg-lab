@@ -1,0 +1,41 @@
+# pgBackRest repo host.
+#
+# This is the pod that legitimately talks to object storage, and it is the ONLY
+# one that should. Isolating that egress here — rather than granting it to every
+# PostgreSQL pod — is most of the value of splitting these policies by role.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pgbackrest-repo-host
+spec:
+  podSelector:
+    matchLabels:
+      postgres-operator.crunchydata.com/data: pgbackrest
+  policyTypes: [Ingress, Egress]
+
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: postgres
+      ports:
+        - {protocol: TCP, port: 8432}
+
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: postgres
+      ports:
+        - {protocol: TCP, port: 8432}
+    # Object storage. In this lab that is MinIO in the pg-backup namespace; in a
+    # cloud deployment replace this with an ipBlock for your provider's S3/GCS/
+    # Azure endpoint, or a VPC endpoint if you have one.
+    #
+    # pgBackRest speaks S3 over HTTPS only, so 443 for a real provider.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pg-backup
+      ports:
+        - {protocol: TCP, port: 9000}

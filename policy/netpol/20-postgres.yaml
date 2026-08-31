@@ -1,0 +1,119 @@
+# PostgreSQL instance pods.
+#
+# THE IMPORTANT ONE: these pods cannot be denied all egress, because Patroni
+# uses the KUBERNETES API as its distributed configuration store. Verified on
+# this lab — /etc/patroni/~postgres-operator_cluster.yaml contains a
+# `kubernetes:` block with `use_endpoints: true`, not etcd or Consul.
+#
+# Cut that path and Patroni cannot renew the leader lease. The cluster does not
+# fail loudly; it demotes and goes read-only, which looks like a database
+# problem rather than a network one.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-instances
+spec:
+  podSelector:
+    matchLabels:
+      postgres-operator.crunchydata.com/data: postgres
+  policyTypes: [Ingress, Egress]
+
+  ingress:
+    # Clients and poolers, plus peer replication — all on 5432.
+    - from:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/role: pgbouncer
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: postgres
+      ports:
+        - {protocol: TCP, port: 5432}
+    # Patroni's REST API — peers poll each other for health and this is how a
+    # standby learns the leader is gone.
+    - from:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: postgres
+      ports:
+        - {protocol: TCP, port: 8008}
+    # pgBackRest TLS, from the dedicated repo host.
+    - from:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: pgbackrest
+      ports:
+        - {protocol: TCP, port: 8432}
+    # Prometheus scraping the exporter sidecar.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - {protocol: TCP, port: 9187}
+    # Direct connections from ancillary pods in this namespace: a psql shell, a
+    # migration job, the benchmark harness comparing pooled against direct.
+    #
+    # This is the counterpart to the egress rule in 50-cluster-jobs.yaml, and
+    # forgetting it is easy: NetworkPolicy needs BOTH sides. Egress alone let
+    # the client pod send, and the connection still timed out because the
+    # PostgreSQL pod's ingress had no matching rule — a failure that looks like
+    # the database is down rather than like a policy gap.
+    #
+    # Remove this rule if you want to force every connection through pgBouncer.
+    # The lab keeps it because sql_direct and the perf comparison need it.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - {key: postgres-operator.crunchydata.com/data, operator: DoesNotExist}
+              - {key: postgres-operator.crunchydata.com/role, operator: DoesNotExist}
+      ports:
+        - {protocol: TCP, port: 5432}
+
+  egress:
+    # Peers: replication, Patroni REST, pgBackRest.
+    - to:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: postgres
+      ports:
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 8008}
+        - {protocol: TCP, port: 8432}
+    # The repo host, for archive-push and backups.
+    - to:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: pgbackrest
+      ports:
+        - {protocol: TCP, port: 8432}
+    # THE KUBERNETES API — Patroni's DCS. See the note above.
+    #
+    # An ipBlock, not a selector, because the API server is not a pod: it is
+    # reached at a node IP (or, on a managed cloud cluster, an endpoint outside
+    # the cluster network entirely).
+    #
+    # BOTH addresses, deliberately. Clients reach the API two different ways and
+    # a policy that allows only one produces a partial, confusing outage:
+    #   * the Service ClusterIP, e.g. 10.96.0.1:443  (what in-cluster clients
+    #     resolve kubernetes.default.svc to)
+    #   * the endpoint behind it,  e.g. 172.18.0.6:6443
+    # Whether a policy sees the pre- or post-DNAT address depends on the CNI, so
+    # allowing only the endpoint left the operator's backup jobs failing with
+    #     dial tcp 10.96.0.1:443: i/o timeout
+    # while PostgreSQL itself was fine. scripts/netpol-install.sh discovers and
+    # substitutes both.
+    #
+    # This is the block to review most carefully when porting to a cloud
+    # provider — on EKS the API endpoint may be a public address, and a /32 for
+    # it is not the same security property as a private-only endpoint.
+    - to:
+        - ipBlock:
+            cidr: API_SERVER_CIDR
+      ports:
+        - {protocol: TCP, port: API_SERVER_PORT}
+    - to:
+        - ipBlock:
+            cidr: API_SERVICE_CIDR
+      ports:
+        - {protocol: TCP, port: API_SERVICE_PORT}

@@ -1,0 +1,39 @@
+# PgBouncer. Accepts client traffic, talks only to PostgreSQL.
+#
+# Note it does NOT need the Kubernetes API: it resolves the primary through the
+# <cluster>-primary Service, which is DNS plus normal pod networking.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pgbouncer
+spec:
+  podSelector:
+    matchLabels:
+      postgres-operator.crunchydata.com/role: pgbouncer
+  policyTypes: [Ingress, Egress]
+
+  ingress:
+    # Application clients. Narrow this to the namespaces that should actually
+    # reach your database — the default here is deliberately explicit rather
+    # than {} so that adding a namespace is a visible change.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              percona-pg-lab.io/database-client: "true"
+        - podSelector: {}          # same-namespace clients, e.g. the perf harness
+      ports:
+        - {protocol: TCP, port: 5432}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - {protocol: TCP, port: 9127}
+
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: postgres
+      ports:
+        - {protocol: TCP, port: 5432}

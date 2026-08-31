@@ -109,7 +109,16 @@ ensure_client_pod() {
     [[ "$phase" == "Running" ]] && return 0
     k -n "$ns" delete pod "$PGCLIENT_POD" --now >/dev/null 2>&1 || true
   fi
+  # The securityContext is not optional decoration. A namespace enforcing the
+  # `restricted` Pod Security Standard rejects a plain `kubectl run` outright:
+  #   violates PodSecurity "restricted:latest": allowPrivilegeEscalation != false,
+  #   unrestricted capabilities, runAsNonRoot != true, seccompProfile
+  # The operator's own pods already satisfy restricted, so it would be an odd
+  # repository whose test tooling was the reason you could not enable it.
+  # runAsUser 26 is the postgres UID in the Percona image.
   k -n "$ns" run "$PGCLIENT_POD" --image="$PG_IMAGE" --restart=Never \
+    --override-type=strategic \
+    --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":26,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"'"$PGCLIENT_POD"'","securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
     --command -- sleep 7200 >/dev/null
   k -n "$ns" wait --for=condition=Ready "pod/${PGCLIENT_POD}" --timeout=180s >/dev/null
 }

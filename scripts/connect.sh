@@ -41,7 +41,36 @@ dim "    ${mode} -> ${host}/${db}"
 tty_flag=()
 [[ -t 0 && -t 1 ]] && tty_flag=(--tty)
 
-k -n "$ns" run "psql-$RANDOM" --rm -i "${tty_flag[@]}" --restart=Never --quiet \
+# --overrides is a strategic-merge patch over the pod kubectl generates, so we
+# only need to state what differs: the securityContext. Command, env and args
+# are left to the normal --command/--env flags rather than restated as JSON,
+# which was both unreadable and easy to get subtly wrong.
+#
+# Without this, a namespace enforcing the `restricted` Pod Security Standard
+# refuses the pod outright.
+pod="psql-$RANDOM"
+overrides="$(cat <<JSON
+{"spec":{
+  "securityContext":{"runAsNonRoot":true,"runAsUser":26,"seccompProfile":{"type":"RuntimeDefault"}},
+  "containers":[{"name":"${pod}",
+    "securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}
+JSON
+)"
+
+# --override-type=strategic, NOT kubectl's default.
+#
+# --overrides defaults to a JSON MERGE patch, which replaces the containers list
+# wholesale: the generated command and env are silently discarded and the
+# container starts as a bare PostgreSQL image, failing with "Database is
+# uninitialized". It is the same list-replacement trap as a strategic-merge
+# patch on a CR — it recurs. `strategic` merges by container name.
+#
+# ${arr[@]+"${arr[@]}"} rather than "${arr[@]}": on bash 3.2 — which is what
+# macOS ships — expanding an empty array under `set -u` is an "unbound variable"
+# error, not an empty expansion.
+k -n "$ns" run "$pod" --rm -i ${tty_flag[@]+"${tty_flag[@]}"} --restart=Never --quiet \
   --image="$PG_IMAGE" \
   --env="PGPASSWORD=${pw}" --env="PGSSLMODE=require" \
+  --override-type=strategic \
+  --overrides="$overrides" \
   --command -- psql -h "$host" -p 5432 -U "$cluster" -d "$db" "$@"

@@ -94,6 +94,11 @@ spec:
             runAsUser: 65534
             runAsGroup: 65534
             capabilities: {drop: [ALL]}
+            # Required by the `restricted` Pod Security Standard. The operator
+            # sets this on its own containers; a sidecar you add is yours to
+            # harden, and without it the whole POD fails admission under
+            # restricted — taking the database with it, not just the sidecar.
+            seccompProfile: {type: RuntimeDefault}
 
       # NOTE: do NOT add a topologySpreadConstraint here for
       # topology.kubernetes.io/zone or kubernetes.io/hostname with
@@ -187,6 +192,11 @@ spec:
             runAsUser: 65534
             runAsGroup: 65534
             capabilities: {drop: [ALL]}
+            # Required by the `restricted` Pod Security Standard. The operator
+            # sets this on its own containers; a sidecar you add is yours to
+            # harden, and without it the whole POD fails admission under
+            # restricted — taking the database with it, not just the sidecar.
+            seccompProfile: {type: RuntimeDefault}
 
   backups:
     pgbackrest:

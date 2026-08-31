@@ -19,6 +19,7 @@ Read in order for a walkthrough, or jump to what you need.
 | 13 | [Cloud Kubernetes](13-cloud-kubernetes.md) | What changes on EKS, GKE or AKS? |
 | 14 | [CI/CD promotion](14-cicd-promotion.md) | How do I get a change from dev to prod without breaking prod? |
 | 15 | [Admission policies](15-admission-policies.md) | How do I make the rules impossible to bypass? |
+| 16 | [Network & security](16-network-and-security.md) | Can PostgreSQL reach the internet? What else should I lock down? |
 
 > **One page is not verified the way the rest are.**
 > [13-cloud-kubernetes](13-cloud-kubernetes.md) is reasoned from the operator's

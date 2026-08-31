@@ -78,8 +78,17 @@ jobs:
       - name: Deploy the dev profile
         run: READY_TIMEOUT=1500 make dev-up
 
+      # After the cluster exists, because the installer refuses to proceed
+      # until it has PROVEN the CNI enforces NetworkPolicy — creating policies
+      # against a CNI that ignores them is worse than creating none.
+      - name: Install network policies
+        run: scripts/netpol-install.sh pg-dev
+
       - name: Run the test suite
-        run: scripts/run-tests.sh 00_operator.bats 10_dev_standalone.bats 95_admission_policy.bats
+        run: |
+          scripts/run-tests.sh \
+            00_operator.bats 10_dev_standalone.bats \
+            95_admission_policy.bats
 
       - name: Diagnostics on failure
         if: failure()

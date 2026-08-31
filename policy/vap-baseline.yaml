@@ -59,6 +59,21 @@ spec:
           && has(object.spec.patroni.dynamicConfiguration.postgresql)
           && has(object.spec.patroni.dynamicConfiguration.postgresql.parameters)
           ? object.spec.patroni.dynamicConfiguration.postgresql.parameters : {}
+    # Every user-supplied container across the CR: instance sidecars, pgBouncer
+    # sidecars, and the pgBackRest repo-host sidecars. These are the parts of a
+    # PerconaPGCluster that let you run arbitrary code next to the database.
+    - name: sidecars
+      expression: >-
+        object.spec.instances.map(i, has(i.sidecars) ? i.sidecars : []).flatten() +
+        (has(object.spec.proxy) && has(object.spec.proxy.pgBouncer)
+          && has(object.spec.proxy.pgBouncer.sidecars)
+            ? object.spec.proxy.pgBouncer.sidecars : [])
+    - name: sidecarVolumes
+      expression: >-
+        object.spec.instances.map(i, has(i.sidecarVolumes) ? i.sidecarVolumes : []).flatten() +
+        (has(object.spec.proxy) && has(object.spec.proxy.pgBouncer)
+          && has(object.spec.proxy.pgBouncer.sidecarVolumes)
+            ? object.spec.proxy.pgBouncer.sidecarVolumes : [])
     - name: preloadCount
       expression: >-
         (has(variables.builtin.pg_stat_statements) && variables.builtin.pg_stat_statements ? 1 : 0) +
@@ -146,6 +161,75 @@ spec:
         Do not set shared_preload_libraries under patroni.dynamicConfiguration — the
         operator derives it from spec.extensions.builtin, appends to your value, and then
         overwrites it on the next reconcile. Use spec.extensions.builtin instead.
+    # ------------------------------------------------------------------
+    # Sidecars are arbitrary containers running next to the database, with
+    # access to its network namespace and whatever volumes you give them. The
+    # CRD accepts a full container spec, so "who can edit a PerconaPGCluster"
+    # is effectively "who can run a privileged pod" unless something says
+    # otherwise.
+    #
+    # Pod Security Standards would catch most of this — but at POD admission,
+    # which means the CR is accepted, the operator reconciles, and the failure
+    # surfaces later as pods that will not start. Catching it on the CR gives
+    # the error to the person running kubectl apply, at the moment they run it.
+    - expression: >-
+        !variables.sidecars.exists(c,
+          has(c.securityContext) && has(c.securityContext.privileged)
+          && c.securityContext.privileged)
+      reason: Forbidden
+      messageExpression: >-
+        "privileged sidecar container(s): " +
+        variables.sidecars.filter(c, has(c.securityContext)
+          && has(c.securityContext.privileged) && c.securityContext.privileged)
+          .map(c, c.name).join(", ") +
+        ". A privileged container next to the database is root on the node."
+
+    - expression: >-
+        variables.sidecars.all(c,
+          has(c.securityContext)
+          && has(c.securityContext.allowPrivilegeEscalation)
+          && !c.securityContext.allowPrivilegeEscalation
+          && has(c.securityContext.runAsNonRoot)
+          && c.securityContext.runAsNonRoot)
+      reason: Forbidden
+      messageExpression: >-
+        "every sidecar needs securityContext with runAsNonRoot: true and " +
+        "allowPrivilegeEscalation: false. Offending: " +
+        variables.sidecars.filter(c,
+          !(has(c.securityContext)
+            && has(c.securityContext.allowPrivilegeEscalation)
+            && !c.securityContext.allowPrivilegeEscalation
+            && has(c.securityContext.runAsNonRoot)
+            && c.securityContext.runAsNonRoot)).map(c, c.name).join(", ")
+
+    # runAsNonRoot without a numeric runAsUser fails at container start when the
+    # image declares a NAME rather than a UID ("non-numeric user (nobody),
+    # cannot verify user is non-root"). Both Prometheus exporter images do.
+    - expression: >-
+        variables.sidecars.all(c,
+          !has(c.securityContext) || !has(c.securityContext.runAsNonRoot)
+          || !c.securityContext.runAsNonRoot
+          || has(c.securityContext.runAsUser))
+      reason: Invalid
+      messageExpression: >-
+        "sidecar(s) set runAsNonRoot without a numeric runAsUser: " +
+        variables.sidecars.filter(c, has(c.securityContext)
+          && has(c.securityContext.runAsNonRoot) && c.securityContext.runAsNonRoot
+          && !has(c.securityContext.runAsUser)).map(c, c.name).join(", ") +
+        ". If the image declares USER by name (both Prometheus exporter images do), " +
+        "the kubelet cannot verify it is non-root and refuses to start the container."
+
+    # hostPath in a sidecar volume reads (or writes) the node filesystem from a
+    # pod that also has a database connection. There is no legitimate use for it
+    # in this operator that a PVC or projected Secret does not cover better.
+    - expression: >-
+        !variables.sidecarVolumes.exists(v, has(v.hostPath))
+      reason: Forbidden
+      messageExpression: >-
+        "sidecarVolumes use hostPath: " +
+        variables.sidecarVolumes.filter(v, has(v.hostPath)).map(v, v.name).join(", ") +
+        ". That is node filesystem access from a pod that can also read the database. " +
+        "Use a PVC (sidecarPVCs) or a projected Secret/ConfigMap instead."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

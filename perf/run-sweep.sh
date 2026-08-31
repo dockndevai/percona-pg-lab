@@ -38,8 +38,11 @@ ensure_pod() {
     # --requests/--limits were removed from `kubectl run`; use --overrides.
     # The client needs real CPU: if pgbench itself is throttled you measure the
     # benchmark harness rather than the database.
+    # securityContext as well as resources: a namespace enforcing the
+    # `restricted` Pod Security Standard rejects a plain `kubectl run`.
     k -n "$NS" run "$POD" --image="$PG_IMAGE" --restart=Never \
-      --overrides='{"spec":{"containers":[{"name":"'"$POD"'","image":"'"$PG_IMAGE"'","command":["sleep","86400"],"resources":{"requests":{"cpu":"200m","memory":"128Mi"},"limits":{"cpu":"2","memory":"512Mi"}}}]}}' \
+      --override-type=strategic \
+      --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":26,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"'"$POD"'","resources":{"requests":{"cpu":"200m","memory":"128Mi"},"limits":{"cpu":"2","memory":"512Mi"}},"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
       --command -- sleep 86400 >/dev/null
   fi
   k -n "$NS" wait --for=condition=Ready "pod/${POD}" --timeout=300s >/dev/null

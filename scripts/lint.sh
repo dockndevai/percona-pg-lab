@@ -57,11 +57,23 @@ if command -v kubeconform >/dev/null 2>&1; then
     "${REPO_ROOT}/observability/kube-prometheus-stack/prometheus-rules.yaml"
     "${REPO_ROOT}/clusters/upgrade-demo/upgrade.yaml"
   )
+  # NetworkPolicies are core types, so kubeconform validates them strictly.
+  # The API_SERVER_* placeholders are substituted at install time, so lint a
+  # rendered copy rather than the template.
+  tmpnp="$(mktemp -d)"
+  for f in "${REPO_ROOT}"/policy/netpol/*.yaml; do
+    sed -e 's#API_SERVER_CIDR#10.0.0.1/32#'  -e 's#API_SERVER_PORT#6443#' \
+        -e 's#API_SERVICE_CIDR#10.96.0.1/32#' -e 's#API_SERVICE_PORT#443#' \
+        "$f" > "${tmpnp}/$(basename "$f")"
+  done
+  manifests+=("${tmpnp}"/*.yaml)
   if kubeconform -strict -ignore-missing-schemas -summary "${manifests[@]}"; then
     ok "kubeconform clean"
   else
     fail=1
   fi
+
+  rm -rf "${tmpnp:-/nonexistent}"
 
   # Rendered kustomize output is a complete manifest set, so validate that too.
   for d in "${REPO_ROOT}"/clusters/*/; do

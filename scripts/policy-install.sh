@@ -47,6 +47,30 @@ for pair in "app-dev:dev" "app-staging:staging" "app-prod:prod"; do
   fi
 done
 
+# Pod Security Standards. Verified on this lab: the operator's own containers
+# already satisfy `restricted` — runAsNonRoot, allowPrivilegeEscalation false,
+# readOnlyRootFilesystem, all capabilities dropped, seccompProfile
+# RuntimeDefault. It costs nothing to enforce and it constrains every pod the
+# operator creates, including the sidecars you add.
+#
+# Opt-in because it will reject ad-hoc pods created with a plain `kubectl run`.
+# The tooling in this repo sets a compliant securityContext; yours may not.
+if [[ "${PSS:-1}" == "1" ]]; then
+  log "enforcing the 'restricted' Pod Security Standard"
+  for ns in "$HA_NS" "$DEV_NS" "$DR_NS" app-dev app-staging app-prod; do
+    k get ns "$ns" >/dev/null 2>&1 || continue
+    out="$(k label ns "$ns" \
+      pod-security.kubernetes.io/enforce=restricted \
+      pod-security.kubernetes.io/enforce-version=latest --overwrite 2>&1)"
+    if grep -q "violate" <<<"$out"; then
+      warn "${ns}: existing pods violate restricted (they keep running; new ones are refused)"
+      grep -oE "Warning: [^:]*: .*" <<<"$out" | head -1 | sed 's/^/        /' >&2
+    else
+      dim "    ${ns} → restricted"
+    fi
+  done
+fi
+
 # The type checker is the only warning you get that an expression may silently
 # do nothing at runtime. Treat a warning as a failure.
 log "verifying the policies compiled"

@@ -16,11 +16,28 @@ setup_file() {
   local pw host
   pw="$(pguser_field "$HA_NS" "$HA_CLUSTER" password)"
   host="$(pguser_field "$HA_NS" "$HA_CLUSTER" host)"
-  if ! k -n "$HA_NS" exec "$PGCLIENT_POD" -- env PGPASSWORD="$pw" PGSSLMODE=require \
-       psql -h "$host" -U "$HA_CLUSTER" -d "$HA_CLUSTER" -tAXc \
-       "select 1 from pg_class where relname='pgbench_accounts';" 2>/dev/null | grep -q 1; then
+
+  # Wait for the primary to actually accept connections before probing.
+  #
+  # This suite runs straight after 30_failover, which force-kills the primary.
+  # The cluster reports `ready` as soon as Patroni has promoted, but pgBouncer
+  # and the client pod may still be reconnecting — and a bare failure in
+  # setup_file aborts every test in the file with an unhelpful
+  # "setup_file failed" rather than the reason.
+  local i
+  for i in $(seq 1 30); do
     k -n "$HA_NS" exec "$PGCLIENT_POD" -- env PGPASSWORD="$pw" PGSSLMODE=require \
-      pgbench -h "$host" -U "$HA_CLUSTER" -d "$HA_CLUSTER" -i -s 5 --quiet >/dev/null 2>&1
+      psql -h "$host" -U "$HA_CLUSTER" -d "$HA_CLUSTER" -tAXc 'select 1;' >/dev/null 2>&1 && break
+    sleep 5
+  done
+
+  local has_tables=""
+  has_tables="$(k -n "$HA_NS" exec "$PGCLIENT_POD" -- env PGPASSWORD="$pw" PGSSLMODE=require \
+    psql -h "$host" -U "$HA_CLUSTER" -d "$HA_CLUSTER" -tAXc \
+    "select 1 from pg_class where relname='pgbench_accounts';" 2>/dev/null || true)"
+  if [[ "$has_tables" != *1* ]]; then
+    k -n "$HA_NS" exec "$PGCLIENT_POD" -- env PGPASSWORD="$pw" PGSSLMODE=require \
+      pgbench -h "$host" -U "$HA_CLUSTER" -d "$HA_CLUSTER" -i -s 5 --quiet >/dev/null 2>&1 || true
   fi
 }
 

@@ -1,0 +1,49 @@
+# Everything in the namespace that is not an instance, a pooler or the repo
+# host: the operator's own backup/restore Jobs, and any psql shell, migration
+# job or benchmark you run alongside the cluster.
+#
+# These pods are easy to forget, because they are transient — and the failure is
+# ugly: the operator's backup Job cannot reach the Kubernetes API, retries
+# forever, and fills the namespace with Error pods while the cluster itself
+# looks perfectly healthy. Observed exactly that:
+#     dial tcp 10.96.0.1:443: i/o timeout
+#
+# Selected by the ABSENCE of the operator's role labels, so a new kind of
+# ancillary pod is covered automatically rather than needing another policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cluster-jobs-and-clients
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: postgres-operator.crunchydata.com/data, operator: DoesNotExist}
+      - {key: postgres-operator.crunchydata.com/role, operator: DoesNotExist}
+  policyTypes: [Egress]
+  egress:
+    # The Kubernetes API — the operator's Jobs list pods through it.
+    - to:
+        - ipBlock: {cidr: API_SERVER_CIDR}
+      ports: [{protocol: TCP, port: API_SERVER_PORT}]
+    - to:
+        - ipBlock: {cidr: API_SERVICE_CIDR}
+      ports: [{protocol: TCP, port: API_SERVICE_PORT}]
+    # The cluster itself: pgBackRest to the instances and repo host, SQL to the
+    # pooler and (for tooling that deliberately bypasses it) to the instances.
+    - to:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: postgres
+      ports:
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 8432}
+    - to:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/data: pgbackrest
+      ports: [{protocol: TCP, port: 8432}]
+    - to:
+        - podSelector:
+            matchLabels:
+              postgres-operator.crunchydata.com/role: pgbouncer
+      ports: [{protocol: TCP, port: 5432}]

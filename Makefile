@@ -124,8 +124,20 @@ policy-check: ## Report which existing clusters would be rejected — changes no
 	@scripts/policy-install.sh --check
 
 .PHONY: policy-test
-policy-test: ## Run the admission policy suite (17 assertions)
+policy-test: ## Run the admission policy suite (23 assertions)
 	@scripts/run-tests.sh 95_admission_policy.bats
+
+.PHONY: netpol-install
+netpol-install: ## Install network policies on the HA namespace (default-deny + allowlist)
+	@scripts/netpol-install.sh
+
+.PHONY: netpol-test
+netpol-test: ## Verify the required flows work and nothing else does
+	@scripts/run-tests.sh 96_network_policy.bats
+
+.PHONY: netpol-uninstall
+netpol-uninstall: ## Remove the network policies
+	@scripts/netpol-uninstall.sh
 
 .PHONY: policy-uninstall
 policy-uninstall: ## Remove the admission policies

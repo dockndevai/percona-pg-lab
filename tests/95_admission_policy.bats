@@ -102,6 +102,40 @@ assert_admitted() {
   assert_denied "$POLICY_NS_DEV" bad-manual-preload.yaml "shared_preload_libraries"
 }
 
+# ------------------------------------------------------------------ sidecars
+#
+# Sidecars are arbitrary containers embedded in the CR, so "who can edit a
+# PerconaPGCluster" is effectively "who can run a pod next to the database".
+# Pod Security Standards would catch most of this at POD admission — these rules
+# catch it on the CR, so the error reaches whoever ran kubectl apply.
+
+@test "a correctly hardened sidecar is admitted" {
+  assert_admitted "$POLICY_NS_DEV" valid-sidecar.yaml
+}
+
+@test "rejects a privileged sidecar" {
+  assert_denied "$POLICY_NS_DEV" bad-sidecar-privileged.yaml "privileged sidecar"
+}
+
+@test "rejects a sidecar with no securityContext" {
+  assert_denied "$POLICY_NS_DEV" bad-sidecar-no-seccontext.yaml "every sidecar needs securityContext"
+}
+
+@test "rejects a sidecar that allows privilege escalation" {
+  assert_denied "$POLICY_NS_DEV" bad-sidecar-privesc.yaml "allowPrivilegeEscalation: false"
+}
+
+@test "rejects runAsNonRoot without a numeric runAsUser" {
+  # Not a theoretical rule: both Prometheus exporter images declare USER by
+  # name, and the kubelet refuses to start such a container when it cannot
+  # verify the name is non-root.
+  assert_denied "$POLICY_NS_DEV" bad-sidecar-nonnumeric-user.yaml "numeric runAsUser"
+}
+
+@test "rejects hostPath in sidecarVolumes" {
+  assert_denied "$POLICY_NS_DEV" bad-sidecar-hostpath.yaml "hostPath"
+}
+
 # ---------------------------------------------------------------- production
 
 @test "a valid production cluster is admitted in a prod namespace" {
